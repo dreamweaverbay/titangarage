@@ -1,0 +1,1464 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0b1424">
+<title>Titan Garage</title>
+<style>
+  html,body{margin:0;padding:0;background:#0b1424;height:100%;overflow:hidden;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overscroll-behavior:none;}
+  #game{display:block;touch-action:none;width:100vw;height:100vh;}
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+"use strict";
+/* =====================================================================
+   TITAN GARAGE — a rebuild-the-robot arcade for ages 6–8
+   One file. No accounts, no ads, no internet needed after loading.
+
+   ------------------- PARENT TWEAK ZONE -------------------
+   Change these numbers to make the game easier/harder/longer.
+=======================================================================*/
+const CONFIG = {
+  roundSeconds: 60,      // length of Slash Lab and Truck Run rounds
+  shields: 3,            // mistakes allowed per round
+  hintCount: 3,          // free hints per Build Bay puzzle
+  maxLevel: 12,          // difficulty cap for each mission
+  boltCap: 60            // max bolts earnable in one round
+};
+// Cost of each Titan part, installed bottom-up. Total = 265 bolts.
+const PARTS = [
+  {name:"LEFT LEG",  cost:15},
+  {name:"RIGHT LEG", cost:15},
+  {name:"HIPS",      cost:20},
+  {name:"BODY",      cost:25},
+  {name:"POWER CORE",cost:25},
+  {name:"LEFT ARM",  cost:30},
+  {name:"RIGHT ARM", cost:30},
+  {name:"HEAD",      cost:35},
+  {name:"VISOR",     cost:35},
+  {name:"TURBO PACK",cost:45}
+];
+const PAINTS = [
+  {name:"STORM",  main:"#35e0ff", dark:"#1479a0", glow:"#8ff3ff"},
+  {name:"LAVA",   main:"#ff8a2a", dark:"#b04a10", glow:"#ffc98a"},
+  {name:"VENOM",  main:"#9be838", dark:"#4f8a12", glow:"#d4ff8f"},
+  {name:"GALAXY", main:"#b48bff", dark:"#5b3fa8", glow:"#e2ccff"}
+];
+/* ----------------- end tweak zone ----------------- */
+
+const COL = {
+  bg:"#0b1424", panel:"#16233a", panel2:"#1b2a40", line:"#2c405f",
+  text:"#eaf4ff", dim:"#8aa3c4", cyan:"#35e0ff", orange:"#ff8a2a",
+  lime:"#9be838", red:"#ff4a6a", yellow:"#ffd23f", purple:"#b48bff",
+  sludge:"#6b7280"
+};
+
+/* ---------------- save / load ---------------- */
+const SAVE_KEY = "titan-garage-v1";
+function defaultSave(){
+  return {v:1, bolts:0, parts:0, lv:{slash:1,build:1,truck:1},
+          snd:true, paint:0, rebuilt:false, power:0, powerLv:0,
+          seen:{}, intro:false};
+}
+let S = defaultSave();
+try{
+  const raw = localStorage.getItem(SAVE_KEY);
+  if(raw){ const d = JSON.parse(raw); if(d && d.v===1) S = Object.assign(defaultSave(), d); }
+}catch(e){}
+function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){} }
+
+/* ---------------- canvas ---------------- */
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+let W=0,H=0,DPR=1;
+function resize(){
+  DPR = Math.min(window.devicePixelRatio||1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  canvas.width = Math.round(W*DPR); canvas.height = Math.round(H*DPR);
+  canvas.style.width = W+"px"; canvas.style.height = H+"px";
+  if(ctx && ctx.setTransform) ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+window.addEventListener("resize", resize);
+resize();
+
+/* ---------------- audio (tiny synth, no files) ---------------- */
+let AC=null;
+function unlockAudio(){
+  if(AC) return;
+  try{
+    const A = window.AudioContext || window.webkitAudioContext;
+    if(A) AC = new A();
+  }catch(e){}
+}
+function tone(freq, dur, type, vol, slide){
+  if(!AC || !S.snd) return;
+  try{
+    const o=AC.createOscillator(), g=AC.createGain();
+    o.type=type||"square"; o.frequency.value=freq;
+    if(slide) o.frequency.exponentialRampToValueAtTime(Math.max(20,freq+slide), AC.currentTime+dur);
+    g.gain.setValueAtTime(vol||0.15, AC.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.0001, AC.currentTime+dur);
+    o.connect(g); g.connect(AC.destination);
+    o.start(); o.stop(AC.currentTime+dur+0.02);
+  }catch(e){}
+}
+function noiseBurst(dur, vol){
+  if(!AC || !S.snd) return;
+  try{
+    const n = Math.floor(AC.sampleRate*dur);
+    const buf = AC.createBuffer(1,n,AC.sampleRate);
+    const d = buf.getChannelData(0);
+    for(let i=0;i<n;i++) d[i]=(Math.random()*2-1)*(1-i/n);
+    const src=AC.createBufferSource(); src.buffer=buf;
+    const g=AC.createGain(); g.gain.value=vol||0.2;
+    const f=AC.createBiquadFilter(); f.type="highpass"; f.frequency.value=900;
+    src.connect(f); f.connect(g); g.connect(AC.destination); src.start();
+  }catch(e){}
+}
+const sfx = {
+  click(){ tone(500,0.06,"square",0.10); },
+  slice(){ noiseBurst(0.10,0.22); tone(900,0.05,"sine",0.08,-300); },
+  pop(){ tone(700,0.07,"triangle",0.16,300); },
+  wrong(){ tone(160,0.18,"sawtooth",0.16,-60); },
+  splat(){ tone(110,0.25,"sawtooth",0.2,-40); noiseBurst(0.15,0.15); },
+  coin(){ tone(1046,0.06,"square",0.10); setTimeout(()=>tone(1568,0.09,"square",0.10),60); },
+  smash(){ noiseBurst(0.14,0.28); tone(180,0.12,"square",0.16,-80); },
+  jump(){ tone(320,0.12,"square",0.10,240); },
+  land(){ tone(140,0.08,"sine",0.14,-40); },
+  place(){ tone(420,0.07,"triangle",0.16,120); },
+  install(){ tone(220,0.12,"square",0.14,180); setTimeout(()=>tone(440,0.12,"square",0.12,220),110);
+             setTimeout(()=>tone(880,0.2,"square",0.12,300),230); },
+  win(){ [523,659,784,1046].forEach((f,i)=>setTimeout(()=>tone(f,0.16,"square",0.12),i*110)); },
+  fanfare(){ [392,523,659,784,1046,1318].forEach((f,i)=>setTimeout(()=>tone(f,0.2,"square",0.13),i*130)); }
+};
+
+/* ---------------- small helpers ---------------- */
+const TAU = Math.PI*2;
+function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
+function rand(a,b){ return a+Math.random()*(b-a); }
+function ri(a,b){ return Math.floor(rand(a,b+1)); }
+function pick(arr){ return arr[Math.floor(Math.random()*arr.length)]; }
+function ease(t){ return t<0?0:t>1?1:t*t*(3-2*t); }
+function rrect(x,y,w,h,r){
+  r = Math.min(r, w/2, h/2);
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+function txt(str,x,y,size,color,align,weight,skew){
+  ctx.save();
+  ctx.fillStyle = color||COL.text;
+  ctx.font = (weight||"900")+" "+Math.round(size)+"px system-ui, 'Segoe UI', Arial, sans-serif";
+  ctx.textAlign = align||"center"; ctx.textBaseline="middle";
+  if(skew){ ctx.translate(x,y); ctx.transform(1,0,-0.12,1,0,0); ctx.fillText(str,0,0); }
+  else ctx.fillText(str,x,y);
+  ctx.restore();
+}
+function drawBoltIcon(x,y,r,color){
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle = color||COL.orange;
+  ctx.beginPath();
+  for(let i=0;i<6;i++){ const a=i*TAU/6 + TAU/12;
+    const px=Math.cos(a)*r, py=Math.sin(a)*r;
+    if(i===0) ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = COL.bg;
+  ctx.beginPath(); ctx.arc(0,0,r*0.42,0,TAU); ctx.fill();
+  ctx.restore();
+}
+let shake=0, shakeT=0;
+function addShake(n){ shake=Math.max(shake,n); shakeT=0.25; }
+
+/* floating text + particles (shared) */
+let floaters=[], sparks=[];
+function floatText(str,x,y,color,size){ floaters.push({str,x,y,color,size:size||22,t:0}); }
+function burst(x,y,color,n,speed,life){
+  for(let i=0;i<(n||12);i++){
+    const a=Math.random()*TAU, s=rand(0.3,1)*(speed||280);
+    sparks.push({x,y,vx:Math.cos(a)*s,vy:Math.sin(a)*s-80,t:0,life:life||0.7,
+                 color:color,r:rand(2,5)});
+  }
+}
+function updateFx(dt){
+  for(const f of floaters){ f.t+=dt; f.y-=45*dt; }
+  floaters = floaters.filter(f=>f.t<1);
+  for(const p of sparks){ p.t+=dt; p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=650*dt; }
+  sparks = sparks.filter(p=>p.t<p.life);
+  if(shakeT>0){ shakeT-=dt; if(shakeT<=0) shake=0; }
+}
+function drawFx(){
+  for(const p of sparks){
+    ctx.globalAlpha = clamp(1-p.t/p.life,0,1);
+    ctx.fillStyle=p.color; ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,TAU); ctx.fill();
+  }
+  ctx.globalAlpha=1;
+  for(const f of floaters){
+    ctx.globalAlpha = clamp(1-f.t,0,1);
+    txt(f.str,f.x,f.y,f.size,f.color);
+  }
+  ctx.globalAlpha=1;
+}
+
+/* ---------------- immediate-mode buttons ---------------- */
+let buttons=[];
+function button(x,y,w,h,label,cb,opts){
+  opts=opts||{};
+  buttons.push({x,y,w,h,cb});
+  ctx.save();
+  const base = opts.color||COL.panel2;
+  ctx.fillStyle = base;
+  rrect(x,y,w,h,opts.r!==undefined?opts.r:16); ctx.fill();
+  ctx.lineWidth=3; ctx.strokeStyle = opts.stroke||COL.line; ctx.stroke();
+  if(opts.glow){ ctx.shadowColor=opts.glow; ctx.shadowBlur=18; ctx.stroke(); ctx.shadowBlur=0; }
+  if(label){
+    txt(label, x+w/2 + (opts.iconW?opts.iconW/2:0), y+h/2, opts.size||Math.min(26,h*0.42),
+        opts.textColor||COL.text);
+  }
+  ctx.restore();
+  return {x,y,w,h};
+}
+function hitButtons(p){
+  for(let i=buttons.length-1;i>=0;i--){
+    const b=buttons[i];
+    if(p.x>=b.x && p.x<=b.x+b.w && p.y>=b.y && p.y<=b.y+b.h){
+      sfx.click(); b.cb && b.cb(); return true;
+    }
+  }
+  return false;
+}
+
+/* ---------------- scene manager ---------------- */
+let scene=null, scenes={};
+function go(name){
+  scene = scenes[name];
+  buttons=[]; floaters=[]; sparks=[];
+  if(scene.enter) scene.enter();
+}
+
+/* ---------------- background ---------------- */
+let bgT=0;
+function drawBg(dt){
+  bgT+=dt;
+  ctx.fillStyle=COL.bg; ctx.fillRect(0,0,W,H);
+  // faint garage grid
+  ctx.strokeStyle="rgba(53,224,255,0.05)"; ctx.lineWidth=1;
+  const g=48;
+  ctx.beginPath();
+  for(let x=(bgT*6)%g; x<W; x+=g){ ctx.moveTo(x,0); ctx.lineTo(x,H); }
+  for(let y=0;y<H;y+=g){ ctx.moveTo(0,y); ctx.lineTo(W,y); }
+  ctx.stroke();
+}
+
+/* =====================================================================
+   TITAN DRAWING — the visibly assembling robot
+=======================================================================*/
+function drawTitan(cx, footY, s, count, t, ghostNext){
+  const P = PAINTS[S.paint];
+  // part geometry relative to feet, in units of s
+  function part(i, mode){
+    // mode: "on" solid, "ghost" dashed pulse, "off" invisible faint
+    ctx.save();
+    ctx.translate(cx, footY);
+    ctx.scale(s, s);
+    ctx.lineWidth = 3/s;
+    let fill = P.main, dark = P.dark;
+    if(mode==="ghost"){
+      const pulse = 0.35+0.25*Math.sin(t*5);
+      ctx.setLineDash([8/s,6/s]);
+      ctx.strokeStyle="rgba(53,224,255,"+pulse.toFixed(2)+")";
+      ctx.fillStyle="rgba(53,224,255,0.06)";
+    }else if(mode==="off"){
+      ctx.strokeStyle="rgba(138,163,196,0.10)";
+      ctx.fillStyle="rgba(138,163,196,0.03)";
+      ctx.setLineDash([4/s,8/s]);
+    }else{
+      ctx.strokeStyle=dark; ctx.fillStyle=fill;
+    }
+    const solid = (mode==="on");
+    function box(x,y,w,h,r){ rrect(x,y,w,h,r); ctx.fill(); ctx.stroke();
+      if(solid){ ctx.save(); ctx.fillStyle="rgba(255,255,255,0.18)";
+        rrect(x+w*0.08,y+h*0.08,w*0.84,h*0.22,r*0.7); ctx.fill(); ctx.restore(); } }
+    switch(i){
+      case 0: box(-70,-52,44,52,10); if(solid){ctx.fillStyle=dark; rrect(-76,-14,56,16,6); ctx.fill();} break; // L leg+foot
+      case 1: box(26,-52,44,52,10);  if(solid){ctx.fillStyle=dark; rrect(20,-14,56,16,6); ctx.fill();} break;  // R leg+foot
+      case 2: box(-58,-84,116,36,12); break;                                   // hips
+      case 3: box(-72,-190,144,110,16); break;                                 // body
+      case 4: // power core
+        if(mode!=="on"){ ctx.beginPath(); ctx.arc(0,-136,26,0,TAU); ctx.fill(); ctx.stroke(); }
+        else{
+          const gl = 0.6+0.4*Math.sin(t*4);
+          ctx.save(); ctx.shadowColor=P.glow; ctx.shadowBlur=24*gl;
+          ctx.fillStyle=P.glow; ctx.beginPath(); ctx.arc(0,-136,26,0,TAU); ctx.fill(); ctx.restore();
+          ctx.strokeStyle=dark; ctx.beginPath(); ctx.arc(0,-136,26,0,TAU); ctx.stroke();
+          ctx.fillStyle=COL.text; ctx.beginPath(); ctx.arc(0,-136,9,0,TAU); ctx.fill();
+        } break;
+      case 5: box(-112,-186,34,96,12); if(solid){ctx.fillStyle=dark; rrect(-114,-96,38,26,8); ctx.fill();} break; // L arm+fist
+      case 6: box(78,-186,34,96,12);  if(solid){ctx.fillStyle=dark; rrect(76,-96,38,26,8); ctx.fill();} break;   // R arm+fist
+      case 7: box(-40,-252,80,58,14); break;                                   // head
+      case 8: // visor (eyes)
+        if(mode!=="on"){ rrect(-30,-236,60,18,8); ctx.fill(); ctx.stroke(); }
+        else{
+          ctx.save(); ctx.shadowColor=P.glow; ctx.shadowBlur=16;
+          ctx.fillStyle=P.glow; rrect(-30,-236,60,18,8); ctx.fill(); ctx.restore();
+        } break;
+      case 9: // turbo pack: shoulder thrusters + antenna
+        box(-124,-206,30,26,8); box(94,-206,30,26,8);
+        if(solid){ ctx.strokeStyle=dark; ctx.beginPath(); ctx.moveTo(0,-252); ctx.lineTo(0,-274); ctx.stroke();
+          ctx.fillStyle=P.glow; ctx.beginPath(); ctx.arc(0,-278,6,0,TAU); ctx.fill(); }
+        else{ ctx.beginPath(); ctx.moveTo(0,-252); ctx.lineTo(0,-274); ctx.stroke();
+          ctx.beginPath(); ctx.arc(0,-278,6,0,TAU); ctx.fill(); ctx.stroke(); }
+        break;
+    }
+    ctx.restore();
+  }
+  const bob = S.rebuilt ? Math.sin(t*2)*4*s : 0;
+  ctx.save(); ctx.translate(0,bob);
+  for(let i=0;i<PARTS.length;i++){
+    if(i<count) part(i,"on");
+    else if(i===count && ghostNext) part(i,"ghost");
+    else part(i,"off");
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+   INTRO — the point of the game, in three pictures
+=======================================================================*/
+scenes.intro = {
+  page:0, t:0,
+  enter(){ this.page=0; this.t=0; },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    const cx=W/2, s=Math.min(W,H)/560;
+    txt("TITAN GARAGE", cx, H*0.10, Math.min(46,W*0.09), COL.cyan, "center","900",true);
+    if(this.page===0){
+      // broken titan: scattered parts
+      const t=this.t;
+      for(let i=0;i<6;i++){
+        const a=i*1.05+t*0.3;
+        const x=cx+Math.cos(a)*(W*0.28), y=H*0.45+Math.sin(a*1.3)*(H*0.14);
+        ctx.save(); ctx.translate(x,y); ctx.rotate(a);
+        ctx.fillStyle=PAINTS[S.paint].main; rrect(-26,-14,52,28,8); ctx.fill();
+        ctx.strokeStyle=PAINTS[S.paint].dark; ctx.lineWidth=3; ctx.stroke(); ctx.restore();
+      }
+      txt("TITAN GOT BLASTED", cx, H*0.72, Math.min(34,W*0.07), COL.text);
+      txt("INTO PIECES!", cx, H*0.72+Math.min(40,W*0.085), Math.min(34,W*0.07), COL.text);
+    }else if(this.page===1){
+      drawBoltIcon(cx, H*0.42, Math.min(52,W*0.1), COL.orange);
+      txt("PLAY MISSIONS", cx, H*0.66, Math.min(34,W*0.07), COL.text);
+      txt("EARN BOLTS", cx, H*0.66+Math.min(40,W*0.085), Math.min(34,W*0.07), COL.orange);
+    }else{
+      drawTitan(cx, H*0.68, s*0.9, PARTS.length, this.t, false);
+      txt("REBUILD TITAN!", cx, H*0.82, Math.min(36,W*0.075), COL.lime);
+    }
+    const bw=Math.min(280,W*0.7);
+    button(cx-bw/2, H*0.88, bw, 64, this.page<2?"NEXT":"LET'S GO!", ()=>{
+      if(this.page<2){ this.page++; }
+      else { S.intro=true; save(); go("home"); }
+    }, {color:this.page<2?COL.panel2:"#173a1f", stroke:this.page<2?COL.line:COL.lime, glow:this.page<2?null:COL.lime});
+  }
+};
+
+/* =====================================================================
+   HOME — the garage
+=======================================================================*/
+scenes.home = {
+  t:0, installing:-1, installT:0,
+  enter(){ this.t=0; this.installing=-1; },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    const land = W>H;
+    const cost = S.parts<PARTS.length ? PARTS[S.parts].cost : 0;
+    const canBuy = S.parts<PARTS.length && S.bolts>=cost;
+
+    // ----- top bar
+    const barH = 58;
+    ctx.fillStyle="rgba(11,20,36,0.7)"; ctx.fillRect(0,0,W,barH);
+    txt("TITAN GARAGE", 16, barH/2, Math.min(26,W*0.05), COL.cyan, "left","900",true);
+    // bolts pill
+    const pw=118;
+    ctx.fillStyle=COL.panel; rrect(W-pw-118,10,pw,38,19); ctx.fill();
+    ctx.strokeStyle=COL.line; ctx.lineWidth=2; ctx.stroke();
+    drawBoltIcon(W-pw-118+24,29,11);
+    txt(String(S.bolts), W-pw-118+pw-14, 29, 22, COL.orange, "right");
+    // sound + parent
+    button(W-104,10,44,38, S.snd?"♪":"✕", ()=>{ S.snd=!S.snd; save(); }, {size:20});
+    button(W-52,10,44,38,"⚙", ()=>go("parent"), {size:20});
+
+    // ----- layout regions
+    let titanCX, titanFootY, titanS, missionArea;
+    if(land){
+      titanCX = W*0.30; titanFootY = H*0.88;
+      titanS = Math.min(W*0.30, H*0.78)/300;
+      missionArea = {x:W*0.56, y:barH+14, w:W*0.42, h:H-barH-28, col:true};
+    }else{
+      titanCX = W*0.5; titanFootY = H*0.56;
+      titanS = Math.min(W*0.62, H*0.42)/300;
+      missionArea = {x:W*0.06, y:H*0.60, w:W*0.88, h:H*0.38, col:false};
+    }
+
+    // install animation
+    let showGhost = S.parts<PARTS.length;
+    if(this.installing>=0){
+      this.installT+=dt;
+      if(this.installT>0.5 && this.installing===S.parts){
+        S.parts++; save(); sfx.install(); addShake(8);
+        burst(titanCX, titanFootY-150*titanS, PAINTS[S.paint].glow, 26, 360);
+        if(S.parts>=PARTS.length){ setTimeout(()=>go("victory"), 700); }
+      }
+      if(this.installT>0.8){ this.installing=-1; }
+    }
+    drawTitan(titanCX, titanFootY, titanS, S.parts, this.t, showGhost);
+
+    // progress label under titan
+    if(S.parts<PARTS.length){
+      txt("PARTS: "+S.parts+" / "+PARTS.length, titanCX, titanFootY+22, 18, COL.dim);
+    }else{
+      txt("POWER LV "+S.powerLv, titanCX, titanFootY+22, 20, COL.lime);
+    }
+
+    // ----- install / charge button near titan
+    if(S.parts<PARTS.length){
+      const label = PARTS[S.parts].name;
+      const bw = Math.min(250, W*0.6);
+      const bx = land? titanCX-bw/2 : W/2-bw/2;
+      const by = land? H*0.06+barH : titanFootY+38;
+      // part name chip
+      ctx.fillStyle=COL.panel; rrect(bx,by,bw,30,10); ctx.fill();
+      txt("NEXT: "+label, bx+bw/2, by+15, 15, COL.cyan);
+      if(canBuy){
+        button(bx, by+36, bw, 56, "INSTALL!  "+cost, ()=>{
+          if(this.installing>=0) return;
+          S.bolts-=cost; save();
+          this.installing=S.parts; this.installT=0;
+        }, {color:"#173a1f", stroke:COL.lime, glow:COL.lime, size:24});
+        drawBoltIcon(bx+bw/2+62+String(cost).length*7, by+36+28, 10);
+      }else{
+        ctx.fillStyle=COL.panel; rrect(bx,by+36,bw,44,14); ctx.fill();
+        ctx.strokeStyle=COL.line; ctx.lineWidth=2; ctx.stroke();
+        txt("NEED "+cost+" ", bx+bw/2-8, by+58, 18, COL.dim);
+        drawBoltIcon(bx+bw/2+34, by+58, 9, COL.dim);
+      }
+    }else{
+      // rebuilt: charge meter + paint shop
+      const bw = Math.min(250, W*0.6);
+      const bx = land? titanCX-bw/2 : W/2-bw/2;
+      const by = land? H*0.06+barH : titanFootY+38;
+      ctx.fillStyle=COL.panel; rrect(bx,by,bw,20,10); ctx.fill();
+      ctx.fillStyle=COL.lime;
+      rrect(bx+3,by+3,(bw-6)*clamp(S.power/100,0,1),14,7); ctx.fill();
+      txt("ENERGY "+S.power+" / 100", bx+bw/2, by+10, 12, COL.text);
+      if(S.power>=100){
+        button(bx,by+26,bw,52,"POWER UP!",()=>{
+          S.power-=100; S.powerLv++; save(); sfx.fanfare();
+          burst(titanCX, titanFootY-180*titanS, COL.lime, 40, 420, 1);
+          addShake(10);
+        },{color:"#173a1f",stroke:COL.lime,glow:COL.lime});
+      }else{
+        button(bx,by+26,bw,44,"PAINT SHOP",()=>go("paint"),{stroke:COL.purple});
+      }
+    }
+
+    // ----- mission doors
+    const M = missionArea;
+    const defs = [
+      {key:"slash", name:"SLASH LAB",  sub:"SLICE!", color:COL.red,
+       icon:(x,y,s)=>{ // sliced fruit
+         ctx.strokeStyle=COL.text; ctx.lineWidth=4;
+         ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(x-6*s,y,14*s,Math.PI*0.6,Math.PI*1.6); ctx.fill();
+         ctx.beginPath(); ctx.arc(x+6*s,y,14*s,Math.PI*1.6,Math.PI*0.6); ctx.fill();
+         ctx.beginPath(); ctx.moveTo(x-16*s,y+18*s); ctx.lineTo(x+16*s,y-18*s); ctx.stroke(); }},
+      {key:"build", name:"BUILD BAY",  sub:"SOLVE!", color:COL.yellow,
+       icon:(x,y,s)=>{ ctx.fillStyle=COL.yellow;
+         rrect(x-16*s,y-2*s,14*s,14*s,3); ctx.fill();
+         rrect(x+2*s,y-2*s,14*s,14*s,3); ctx.fill();
+         rrect(x-7*s,y-16*s,14*s,14*s,3); ctx.fill(); }},
+      {key:"truck", name:"TRUCK RUN",  sub:"SMASH!", color:COL.lime,
+       icon:(x,y,s)=>{ ctx.fillStyle=COL.lime;
+         rrect(x-16*s,y-14*s,24*s,12*s,3); ctx.fill();
+         rrect(x-16*s,y-4*s,32*s,8*s,3); ctx.fill();
+         ctx.fillStyle="#222c3d";
+         ctx.beginPath(); ctx.arc(x-9*s,y+8*s,7*s,0,TAU); ctx.fill();
+         ctx.beginPath(); ctx.arc(x+9*s,y+8*s,7*s,0,TAU); ctx.fill(); }}
+    ];
+    for(let i=0;i<3;i++){
+      const d=defs[i];
+      let bx,by,bw,bh;
+      if(M.col){ bh=(M.h-28)/3; bw=M.w; bx=M.x; by=M.y+i*(bh+14); }
+      else{ bw=(M.w-24)/3; bh=M.h-10; bx=M.x+i*(bw+12); by=M.y; }
+      button(bx,by,bw,bh,null,()=>go(d.key),{color:COL.panel,stroke:d.color,r:20});
+      const cxb=bx+bw/2;
+      d.icon(cxb, by+bh*0.34, Math.min(bw,bh)/70);
+      txt(d.name, cxb, by+bh*0.62, Math.min(22,bw*0.13), COL.text);
+      txt(d.sub+"  LV "+S.lv[d.key], cxb, by+bh*0.80, Math.min(15,bw*0.09), d.color);
+    }
+  }
+};
+
+/* =====================================================================
+   RESULT PANEL (shared by missions)
+=======================================================================*/
+function drawResult(title, lines, bolts, againKey){
+  ctx.fillStyle="rgba(6,10,20,0.82)"; ctx.fillRect(0,0,W,H);
+  const pw=Math.min(360,W*0.88), ph=320, px=W/2-pw/2, py=H/2-ph/2;
+  ctx.fillStyle=COL.panel; rrect(px,py,pw,ph,22); ctx.fill();
+  ctx.strokeStyle=COL.cyan; ctx.lineWidth=3; ctx.stroke();
+  txt(title, W/2, py+44, 30, COL.cyan, "center","900",true);
+  let y=py+92;
+  for(const l of lines){ txt(l, W/2, y, 20, COL.text); y+=30; }
+  drawBoltIcon(W/2-52, y+8, 14);
+  txt("+"+bolts, W/2+6, y+8, 30, COL.orange, "left");
+  const bw=(pw-60)/2;
+  button(px+20, py+ph-76, bw, 56, "AGAIN", ()=>go(againKey), {stroke:COL.lime});
+  button(px+40+bw, py+ph-76, bw, 56, "GARAGE", ()=>go("home"), {stroke:COL.cyan});
+}
+function awardBolts(n){
+  n = clamp(n, 4, CONFIG.boltCap);
+  S.bolts += n;
+  if(S.rebuilt){ S.power = clamp(S.power + Math.round(n/2), 0, 100); }
+  save();
+  return n;
+}
+function levelUp(key){ S.lv[key] = clamp(S.lv[key]+1, 1, CONFIG.maxLevel); save(); }
+
+/* mission chrome: timer, shields, back button */
+function missionTop(name, color, timeLeft, shields){
+  ctx.fillStyle="rgba(11,20,36,0.72)"; ctx.fillRect(0,0,W,54);
+  button(8,8,52,38,"✕",()=>go("home"),{size:18});
+  txt(name, 74, 27, 20, color, "left","900",true);
+  if(timeLeft!==null){
+    const tw=Math.min(170,W*0.3);
+    ctx.fillStyle=COL.panel; rrect(W/2-tw/2,14,tw,26,13); ctx.fill();
+    ctx.fillStyle= timeLeft<10? COL.red : COL.cyan;
+    rrect(W/2-tw/2+3,17,(tw-6)*clamp(timeLeft/CONFIG.roundSeconds,0,1),20,10); ctx.fill();
+    txt(Math.ceil(timeLeft)+"s", W/2, 27, 15, COL.bg);
+  }
+  if(shields!==null){
+    for(let i=0;i<CONFIG.shields;i++){
+      const x=W-24-i*30;
+      ctx.fillStyle = i<shields? COL.cyan : "rgba(138,163,196,0.25)";
+      ctx.beginPath();
+      ctx.moveTo(x,12); ctx.lineTo(x+11,18); ctx.lineTo(x+11,30);
+      ctx.quadraticCurveTo(x, 42, x-11, 30); // left side... symmetric shield
+      ctx.lineTo(x-11,18); ctx.closePath(); ctx.fill();
+    }
+  }
+}
+
+/* first-time hint overlay */
+function hintOverlay(key, t, drawDemo, startCb){
+  ctx.fillStyle="rgba(6,10,20,0.85)"; ctx.fillRect(0,0,W,H);
+  drawDemo(t);
+  const bw=Math.min(240,W*0.6);
+  button(W/2-bw/2, H*0.8, bw, 64, "GO!", ()=>{ S.seen[key]=1; save(); startCb(); },
+    {color:"#173a1f", stroke:COL.lime, glow:COL.lime, size:28});
+}
+
+/* =====================================================================
+   SLASH LAB
+=======================================================================*/
+function makeRule(level){
+  const colorRules = [
+    {kind:"color", val:"red",    label:"SLICE ONLY RED",    color:COL.red},
+    {kind:"color", val:"blue",   label:"SLICE ONLY BLUE",   color:COL.cyan},
+    {kind:"color", val:"green",  label:"SLICE ONLY GREEN",  color:COL.lime},
+    {kind:"color", val:"yellow", label:"SLICE ONLY YELLOW", color:COL.yellow}
+  ];
+  const shapeRules = [
+    {kind:"shape", val:"circle", label:"SLICE ONLY CIRCLES",   color:COL.text},
+    {kind:"shape", val:"square", label:"SLICE ONLY SQUARES",   color:COL.text},
+    {kind:"shape", val:"tri",    label:"SLICE ONLY TRIANGLES", color:COL.text},
+    {kind:"shape", val:"star",   label:"SLICE ONLY STARS",     color:COL.text}
+  ];
+  const numRules = [
+    {kind:"num", test:n=>n>=6, label:"SLICE BIG NUMBERS  6·7·8·9", color:COL.orange},
+    {kind:"num", test:n=>n<=4, label:"SLICE SMALL NUMBERS  1·2·3·4", color:COL.orange}
+  ];
+  const evenRules = [
+    {kind:"num", test:n=>n%2===0, label:"SLICE EVEN  2·4·6·8", color:COL.purple},
+    {kind:"num", test:n=>n%2===1, label:"SLICE ODD  1·3·5·7·9", color:COL.purple}
+  ];
+  let pool=[];
+  if(level<2) return {kind:"all", label:"SLICE EVERYTHING!", color:COL.lime};
+  pool = pool.concat(colorRules);
+  if(level>=4) pool = pool.concat(shapeRules);
+  if(level>=6) pool = pool.concat(numRules);
+  if(level>=9) pool = pool.concat(evenRules);
+  return pick(pool);
+}
+function ruleMatch(rule,o){
+  if(o.sludge) return false;
+  if(rule.kind==="all") return true;
+  if(rule.kind==="color") return o.color===rule.val;
+  if(rule.kind==="shape") return o.shape===rule.val;
+  if(rule.kind==="num") return rule.test(o.num);
+  return true;
+}
+const FRUITCOL = {red:COL.red, blue:COL.cyan, green:COL.lime, yellow:COL.yellow};
+
+scenes.slash = {
+  enter(){
+    this.t=0; this.timeLeft=CONFIG.roundSeconds; this.shields=CONFIG.shields;
+    this.score=0; this.combo=0; this.comboT=0;
+    this.objs=[]; this.trail=[]; this.spawnT=0.5;
+    this.level=S.lv.slash;
+    this.rule=makeRule(this.level); this.ruleT=0; this.banner=0;
+    this.over=false; this.started = !!S.seen.slash; this.result=null;
+    this.lastP=null;
+  },
+  spawn(){
+    const lvl=this.level;
+    const roll=Math.random();
+    const o={x:rand(W*0.12,W*0.88), y:H+40, r:Math.min(W,H)*0.055+8,
+             vy:-Math.sqrt(2*1500*rand(H*0.5,H*0.8)), vx:0, sliced:false, rot:rand(0,TAU),
+             vr:rand(-2,2), sludge:false, color:"red", shape:"circle", num:ri(1,9)};
+    o.vx = (W/2-o.x)*rand(0.1,0.5) + rand(-40,40);
+    if(lvl>=2 && roll<0.13){ o.sludge=true; o.r*=1.15; }
+    else{
+      const wantMatch = Math.random()<0.55;
+      // try a few times to get desired match state
+      for(let k=0;k<8;k++){
+        o.color = pick(["red","blue","green","yellow"]);
+        o.shape = pick(["circle","square","tri","star"]);
+        o.num = ri(1,9);
+        if(ruleMatch(this.rule,o)===wantMatch) break;
+      }
+    }
+    this.objs.push(o);
+  },
+  sliceObj(o){
+    o.sliced=true;
+    if(o.sludge){
+      this.shields--; this.combo=0; sfx.splat(); addShake(10);
+      burst(o.x,o.y,COL.sludge,20,320);
+      floatText("YUCK!",o.x,o.y,COL.sludge,26);
+      if(this.shields<=0) this.finish();
+      return;
+    }
+    if(ruleMatch(this.rule,o)){
+      this.combo++; this.comboT=1.6;
+      const pts = 10*Math.min(this.combo,5);
+      this.score += pts;
+      sfx.slice(); if(this.combo>=3) sfx.pop();
+      burst(o.x,o.y,FRUITCOL[o.color],14,340);
+      floatText("+"+pts,o.x,o.y-10,FRUITCOL[o.color],24);
+      if(this.combo===3||this.combo===5) floatText("COMBO x"+Math.min(this.combo,5),W/2,H*0.3,COL.yellow,34);
+    }else{
+      this.combo=0; this.score=Math.max(0,this.score-5);
+      sfx.wrong(); addShake(5);
+      burst(o.x,o.y,"#5b6b85",10,220);
+      floatText("NOT THAT ONE!",o.x,o.y,COL.dim,20);
+    }
+  },
+  finish(){
+    if(this.over) return;
+    this.over=true;
+    const b = awardBolts(Math.round(this.score/8)+4);
+    levelUp("slash");
+    this.result={b};
+    sfx.win();
+  },
+  onDown(p){ this.lastP={x:p.x,y:p.y,t:performance.now()}; this.trail.push({x:p.x,y:p.y,t:0}); },
+  onMove(p){
+    if(!this.started || this.over) return;
+    const now=performance.now();
+    if(this.lastP){
+      const dx=p.x-this.lastP.x, dy=p.y-this.lastP.y;
+      const dtms=Math.max(1, now-this.lastP.t);
+      const speed=Math.hypot(dx,dy)/dtms*1000;
+      if(speed>350){
+        for(const o of this.objs){
+          if(o.sliced) continue;
+          // distance from o to segment lastP->p
+          const l2=dx*dx+dy*dy;
+          let u = l2? ((o.x-this.lastP.x)*dx + (o.y-this.lastP.y)*dy)/l2 : 0;
+          u=clamp(u,0,1);
+          const px=this.lastP.x+u*dx, py=this.lastP.y+u*dy;
+          if(Math.hypot(o.x-px,o.y-py) < o.r*1.05) this.sliceObj(o);
+        }
+      }
+    }
+    this.lastP={x:p.x,y:p.y,t:now};
+    this.trail.push({x:p.x,y:p.y,t:0});
+  },
+  onUp(){ this.lastP=null; },
+  drawObj(o){
+    ctx.save(); ctx.translate(o.x,o.y); ctx.rotate(o.rot);
+    if(o.sludge){
+      ctx.fillStyle=COL.sludge;
+      ctx.beginPath();
+      for(let i=0;i<8;i++){ const a=i/8*TAU;
+        const r=o.r*(0.85+0.2*Math.sin(a*3+this.t*6));
+        const x=Math.cos(a)*r, y=Math.sin(a)*r;
+        if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+      ctx.closePath(); ctx.fill();
+      ctx.fillStyle="#3b4250";
+      ctx.beginPath(); ctx.arc(-o.r*0.3,-o.r*0.15,4,0,TAU); ctx.arc(o.r*0.3,-o.r*0.15,4,0,TAU); ctx.fill();
+      ctx.restore(); return;
+    }
+    const c=FRUITCOL[o.color];
+    ctx.fillStyle=c; ctx.strokeStyle="rgba(0,0,0,0.35)"; ctx.lineWidth=3;
+    if(o.shape==="circle"){ ctx.beginPath(); ctx.arc(0,0,o.r,0,TAU); ctx.fill(); ctx.stroke(); }
+    else if(o.shape==="square"){ rrect(-o.r,-o.r,o.r*2,o.r*2,o.r*0.3); ctx.fill(); ctx.stroke(); }
+    else if(o.shape==="tri"){ ctx.beginPath(); ctx.moveTo(0,-o.r*1.1);
+      ctx.lineTo(o.r,o.r*0.8); ctx.lineTo(-o.r,o.r*0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+    else{ // star
+      ctx.beginPath();
+      for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5;
+        const r=i%2===0?o.r*1.15:o.r*0.5;
+        const x=Math.cos(a)*r,y=Math.sin(a)*r;
+        if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+      ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    // shine
+    ctx.fillStyle="rgba(255,255,255,0.35)";
+    ctx.beginPath(); ctx.arc(-o.r*0.35,-o.r*0.35,o.r*0.22,0,TAU); ctx.fill();
+    if(this.rule.kind==="num"){
+      ctx.rotate(-o.rot);
+      txt(String(o.num),0,2,o.r*1.05,"#0b1424");
+    }
+    ctx.restore();
+  },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    if(!this.started){
+      // demo overlay
+      hintOverlay("slash", this.t, (t)=>{
+        const cx=W/2, cy=H*0.42;
+        txt("SWIPE TO SLICE!", cx, H*0.18, Math.min(34,W*0.08), COL.text);
+        // rule chip
+        ctx.fillStyle=COL.panel; rrect(cx-140,H*0.24,280,44,12); ctx.fill();
+        ctx.strokeStyle=COL.red; ctx.lineWidth=3; ctx.stroke();
+        txt("MATCH THE RULE", cx, H*0.24+22, 18, COL.red);
+        // fruit + animated swipe line
+        ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(cx,cy+40,34,0,TAU); ctx.fill();
+        const ph=(t%1.2)/1.2;
+        const x1=cx-90+ph*180, y1=cy+90-ph*100;
+        ctx.strokeStyle=COL.cyan; ctx.lineWidth=6; ctx.lineCap="round";
+        ctx.beginPath(); ctx.moveTo(cx-90,cy+90); ctx.lineTo(x1,y1); ctx.stroke();
+        ctx.fillStyle=COL.cyan; ctx.beginPath(); ctx.arc(x1,y1,10,0,TAU); ctx.fill();
+        txt("WATCH OUT FOR GRAY SLUDGE!", cx, cy+150, Math.min(18,W*0.045), COL.sludge);
+      }, ()=>{ this.started=true; });
+      return;
+    }
+    if(!this.over){
+      this.timeLeft-=dt;
+      if(this.timeLeft<=0) this.finish();
+      this.ruleT+=dt;
+      if(this.level>=2 && this.ruleT>14){
+        this.ruleT=0; this.rule=makeRule(this.level); this.banner=1.4; sfx.pop();
+      }
+      if(this.banner>0) this.banner-=dt;
+      this.spawnT-=dt*(this.banner>0?0.3:1);
+      if(this.spawnT<=0){
+        this.spawn();
+        if(Math.random()<0.35) this.spawn();
+        this.spawnT = clamp(1.25 - this.level*0.06, 0.5, 1.3);
+      }
+      for(const o of this.objs){
+        o.x+=o.vx*dt; o.y+=o.vy*dt; o.vy+=1500*dt; o.rot+=o.vr*dt;
+      }
+      this.objs=this.objs.filter(o=>!o.sliced && o.y<H+140);
+      for(const p of this.trail) p.t+=dt;
+      this.trail=this.trail.filter(p=>p.t<0.14);
+      if(this.comboT>0){ this.comboT-=dt; if(this.comboT<=0) this.combo=0; }
+    }
+    for(const o of this.objs) this.drawObj(o);
+    // trail
+    if(this.trail.length>1){
+      ctx.strokeStyle=COL.cyan; ctx.lineCap="round"; ctx.lineJoin="round";
+      for(let i=1;i<this.trail.length;i++){
+        const a=1-this.trail[i].t/0.14;
+        ctx.globalAlpha=a; ctx.lineWidth=8*a+2;
+        ctx.beginPath();
+        ctx.moveTo(this.trail[i-1].x,this.trail[i-1].y);
+        ctx.lineTo(this.trail[i].x,this.trail[i].y); ctx.stroke();
+      }
+      ctx.globalAlpha=1;
+    }
+    updateFx(dt); drawFx();
+    // rule chip
+    const rw=Math.min(340,W*0.86);
+    ctx.fillStyle=COL.panel; rrect(W/2-rw/2,60,rw,40,12); ctx.fill();
+    ctx.strokeStyle=this.rule.color; ctx.lineWidth=3; ctx.stroke();
+    txt(this.rule.label, W/2, 80, Math.min(19, rw/this.rule.label.length*1.7), this.rule.color);
+    // score
+    txt("SCORE "+this.score, W/2, 118, 18, COL.text);
+    if(this.banner>0){
+      ctx.globalAlpha=clamp(this.banner,0,1);
+      txt("NEW RULE!", W/2, H*0.36, Math.min(52,W*0.12), COL.yellow, "center","900",true);
+      ctx.globalAlpha=1;
+    }
+    missionTop("SLASH LAB", COL.red, this.timeLeft, this.shields);
+    if(this.over && this.result){
+      drawResult("SLASH DONE!", ["SCORE: "+this.score, "SLASH LV "+S.lv.slash+"!"], this.result.b, "slash");
+    }
+  }
+};
+
+/* =====================================================================
+   BUILD BAY
+=======================================================================*/
+const MASKS = [
+  ["XXX","XXX","XXX"],                                  // 1: 3x3
+  ["XXXX","XXXX","XXXX"],                               // 2: 4x3
+  ["..X..","XXXXX","XXXXX",".XXX."],                    // 3: rocket-ish
+  ["XXXXX","XXXXX","..X..","..X..","..X.."],            // 4: hammer
+  ["X...X","XXXXX","XXXXX",".XXX.",".XXX."],            // 5: robot head
+  ["XXXXXX","XXXXXX","XX..XX","XX..XX"],                // 6: gate
+  ["..XX..",".XXXX.","XXXXXX","XXXXXX",".XXXX."],       // 7: shield
+  ["XX..XX","XXXXXX","XXXXXX",".XXXX.","..XX.."],       // 8: heart-bot
+  ["XXXXXXX","X.XXX.X","XXXXXXX","XXXXXXX",".XX.XX."],  // 9: truck!
+  ["..XXX..",".XXXXX.","XXXXXXX","XXXXXXX","XX.X.XX","XX.X.XX"] // 10: titan
+];
+function maskCells(mask){
+  const cells=[];
+  for(let y=0;y<mask.length;y++)
+    for(let x=0;x<mask[y].length;x++)
+      if(mask[y][x]==="X") cells.push({x,y});
+  return cells;
+}
+function carve(cells, minS, maxS){
+  const key=c=>c.x+","+c.y;
+  const remain=new Map(); for(const c of cells) remain.set(key(c),c);
+  const pieces=[];
+  while(remain.size){
+    const startKey = pick(Array.from(remain.keys()));
+    const start = remain.get(startKey); remain.delete(startKey);
+    const target = ri(minS, maxS);
+    const piece=[start];
+    while(piece.length<target){
+      const opts=[];
+      for(const c of piece){
+        for(const d of [[1,0],[-1,0],[0,1],[0,-1]]){
+          const k=(c.x+d[0])+","+(c.y+d[1]);
+          if(remain.has(k)) opts.push(k);
+        }
+      }
+      if(!opts.length) break;
+      const k=pick(opts); piece.push(remain.get(k)); remain.delete(k);
+    }
+    pieces.push(piece);
+  }
+  // merge tiny pieces (size 1) into an adjacent piece
+  for(let i=pieces.length-1;i>=0;i--){
+    if(pieces[i].length>1) continue;
+    const c=pieces[i][0];
+    let mergedInto=-1;
+    for(let j=0;j<pieces.length && mergedInto<0;j++){
+      if(j===i) continue;
+      for(const o of pieces[j]){
+        if(Math.abs(o.x-c.x)+Math.abs(o.y-c.y)===1){ mergedInto=j; break; }
+      }
+    }
+    if(mergedInto>=0){ pieces[mergedInto].push(c); pieces.splice(i,1); }
+  }
+  return pieces;
+}
+const PIECE_COLORS=[COL.red,COL.cyan,COL.lime,COL.yellow,COL.purple,COL.orange,"#ff7ab8","#57d9a3"];
+
+scenes.build = {
+  enter(){
+    this.t=0; this.level=S.lv.build;
+    this.started=!!S.seen.build; this.won=false; this.result=null;
+    this.hints=CONFIG.hintCount; this.hintFlash=0; this.hintPiece=null;
+    this.drag=null;
+    this.buildPuzzle();
+  },
+  buildPuzzle(){
+    const lvl=this.level;
+    const mask = MASKS[Math.min(lvl-1, MASKS.length-1)];
+    this.cols = Math.max(...mask.map(r=>r.length));
+    this.rows = mask.length;
+    this.region = maskCells(mask);
+    this.regionKeys = new Set(this.region.map(c=>c.x+","+c.y));
+    const minS = lvl<3?3:3, maxS = lvl<3?4:5;
+    const raw = carve(this.region, minS, maxS);
+    this.pieces = raw.map((cellsArr,i)=>{
+      const minX=Math.min(...cellsArr.map(c=>c.x)), minY=Math.min(...cellsArr.map(c=>c.y));
+      const cells = cellsArr.map(c=>({x:c.x-minX, y:c.y-minY}));
+      return {cells, color:PIECE_COLORS[i%PIECE_COLORS.length],
+              home:{gx:minX, gy:minY},
+              homeCells: cellsArr.map(c=>({x:c.x, y:c.y})),
+              placed:false, gx:0, gy:0,
+              tx:0, ty:0, rot:ri(0,3)};
+    });
+    // apply random initial rotation to make it a puzzle
+    for(const p of this.pieces){ for(let r=0;r<p.rot;r++) this.rotCells(p); }
+    this.layout();
+  },
+  rotCells(p){
+    const maxY=Math.max(...p.cells.map(c=>c.y));
+    p.cells = p.cells.map(c=>({x:maxY-c.y, y:c.x}));
+    const minX=Math.min(...p.cells.map(c=>c.x)), minY=Math.min(...p.cells.map(c=>c.y));
+    p.cells = p.cells.map(c=>({x:c.x-minX, y:c.y-minY}));
+  },
+  // rotation needed to restore original orientation (for hints): rotate back
+  unrotate(p){ /* hint just flashes home spot; orientation hint handled by flashing */ },
+  layout(){
+    const topPad=64, boardH = H*0.52, trayTop=topPad+boardH+8;
+    this.cell = Math.floor(Math.min((W*0.9)/this.cols, boardH/this.rows, 68));
+    this.ox = Math.round(W/2 - this.cols*this.cell/2);
+    this.oy = Math.round(topPad + (boardH - this.rows*this.cell)/2)+10;
+    // tray positions
+    this.trayCell = Math.max(16, Math.floor(this.cell*0.55));
+    const unplaced = this.pieces;
+    let x=W*0.06, y=trayTop+14, rowH=0;
+    for(const p of unplaced){
+      const pw=(Math.max(...p.cells.map(c=>c.x))+1)*this.trayCell;
+      const ph=(Math.max(...p.cells.map(c=>c.y))+1)*this.trayCell;
+      if(x+pw>W*0.94){ x=W*0.06; y+=rowH+14; rowH=0; }
+      p.tx=x; p.ty=y;
+      x+=pw+16; rowH=Math.max(rowH,ph);
+    }
+  },
+  occupied(){
+    const occ=new Set();
+    for(const p of this.pieces){
+      if(!p.placed) continue;
+      for(const c of p.cells) occ.add((p.gx+c.x)+","+(p.gy+c.y));
+    }
+    return occ;
+  },
+  drawPiece(p, x, y, cs, alpha){
+    ctx.globalAlpha=alpha===undefined?1:alpha;
+    for(const c of p.cells){
+      const cx=x+c.x*cs, cy=y+c.y*cs;
+      ctx.fillStyle=p.color;
+      rrect(cx+1,cy+1,cs-2,cs-2,cs*0.18); ctx.fill();
+      ctx.fillStyle="rgba(255,255,255,0.25)";
+      rrect(cx+cs*0.14,cy+cs*0.10,cs*0.72,cs*0.2,cs*0.1); ctx.fill();
+      // lego stud
+      ctx.fillStyle="rgba(0,0,0,0.15)";
+      ctx.beginPath(); ctx.arc(cx+cs/2,cy+cs/2,cs*0.16,0,TAU); ctx.fill();
+    }
+    ctx.globalAlpha=1;
+  },
+  pieceAtBoard(p){ // screen rect cells for placed piece
+    return p.cells.map(c=>({x:this.ox+(p.gx+c.x)*this.cell, y:this.oy+(p.gy+c.y)*this.cell}));
+  },
+  onDown(p){
+    if(!this.started || this.won) return;
+    // placed pieces first
+    for(let i=this.pieces.length-1;i>=0;i--){
+      const pc=this.pieces[i];
+      if(pc.placed){
+        for(const c of pc.cells){
+          const cx=this.ox+(pc.gx+c.x)*this.cell, cy=this.oy+(pc.gy+c.y)*this.cell;
+          if(p.x>=cx&&p.x<=cx+this.cell&&p.y>=cy&&p.y<=cy+this.cell){
+            pc.placed=false; pc.wasPlaced=true;
+            this.startDrag(pc,p, this.ox+pc.gx*this.cell, this.oy+pc.gy*this.cell, this.cell);
+            return;
+          }
+        }
+      }
+    }
+    for(let i=this.pieces.length-1;i>=0;i--){
+      const pc=this.pieces[i];
+      if(pc.placed) continue;
+      const pw=(Math.max(...pc.cells.map(c=>c.x))+1)*this.trayCell;
+      const ph=(Math.max(...pc.cells.map(c=>c.y))+1)*this.trayCell;
+      if(p.x>=pc.tx-8&&p.x<=pc.tx+pw+8&&p.y>=pc.ty-8&&p.y<=pc.ty+ph+8){
+        pc.wasPlaced=false;
+        this.startDrag(pc,p, pc.tx, pc.ty, this.trayCell);
+        return;
+      }
+    }
+  },
+  startDrag(pc,p, px, py, cs){
+    this.drag={p:pc, offX:(p.x-px)*(this.cell/cs), offY:(p.y-py)*(this.cell/cs),
+               x:p.x, y:p.y, sx:p.x, sy:p.y, t:performance.now(), moved:false};
+  },
+  onMove(p){
+    if(!this.drag) return;
+    this.drag.x=p.x; this.drag.y=p.y;
+    if(Math.hypot(p.x-this.drag.sx,p.y-this.drag.sy)>14) this.drag.moved=true;
+  },
+  onUp(p){
+    if(!this.drag) return;
+    const d=this.drag; this.drag=null;
+    const pc=d.p;
+    const tapped = !d.moved && (performance.now()-d.t)<400;
+    if(tapped){
+      if(d.p.wasPlaced){ sfx.click(); this.layout(); return; } // tap placed = remove to tray
+      this.rotCells(pc); sfx.click(); this.layout(); return;   // tap tray = rotate
+    }
+    // try to place: piece top-left in screen = finger - offset, lifted above finger
+    const lift=this.cell*1.1;
+    const px=d.x-d.offX, py=d.y-d.offY-lift;
+    const gx=Math.round((px-this.ox)/this.cell), gy=Math.round((py-this.oy)/this.cell);
+    const occ=this.occupied();
+    let ok=true;
+    for(const c of pc.cells){
+      const k=(gx+c.x)+","+(gy+c.y);
+      if(!this.regionKeys.has(k) || occ.has(k)){ ok=false; break; }
+    }
+    if(ok){
+      pc.placed=true; pc.gx=gx; pc.gy=gy;
+      sfx.place();
+      burst(this.ox+gx*this.cell+this.cell, this.oy+gy*this.cell+this.cell, pc.color, 8, 200, 0.4);
+      const total=this.occupied().size;
+      if(total===this.region.length) this.winRound();
+    }else{
+      sfx.wrong();
+      this.layout();
+    }
+  },
+  winRound(){
+    this.won=true;
+    sfx.win(); addShake(6);
+    for(let i=0;i<4;i++)
+      burst(rand(W*0.2,W*0.8), rand(H*0.2,H*0.5), pick(PIECE_COLORS), 18, 380, 1);
+    const b=awardBolts(10+this.level*2);
+    levelUp("build");
+    this.result={b, pieces:this.pieces.length};
+  },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    if(!this.started){
+      hintOverlay("build", this.t, (t)=>{
+        txt("FILL THE SHAPE!", W/2, H*0.16, Math.min(34,W*0.08), COL.text);
+        // demo: grid + moving piece
+        const cs=44, gx=W/2-cs*1.5, gy=H*0.26;
+        ctx.strokeStyle=COL.line; ctx.lineWidth=2;
+        for(let y=0;y<2;y++)for(let x=0;x<3;x++){
+          ctx.fillStyle="rgba(53,224,255,0.08)";
+          rrect(gx+x*cs,gy+y*cs,cs-2,cs-2,6); ctx.fill(); ctx.stroke();
+        }
+        const ph=ease((t%1.6)/1.2);
+        const px=W/2-cs*1.5+(0)*1, py=gy+140-ph*140+cs;
+        ctx.fillStyle=COL.yellow;
+        rrect(px, Math.max(gy,py), cs-2, cs-2, 6); ctx.fill();
+        rrect(px+cs, Math.max(gy,py), cs-2, cs-2, 6); ctx.fill();
+        txt("DRAG PIECES IN", W/2, gy+220, Math.min(22,W*0.055), COL.yellow);
+        txt("TAP A PIECE = TURN IT", W/2, gy+258, Math.min(20,W*0.05), COL.cyan);
+      }, ()=>{ this.started=true; this.layout(); });
+      return;
+    }
+    this.layout(); // cheap; keeps layout right on rotate/resize
+    if(this.hintFlash>0) this.hintFlash-=dt;
+    // board sockets
+    const occ=this.occupied();
+    for(const c of this.region){
+      const x=this.ox+c.x*this.cell, y=this.oy+c.y*this.cell;
+      ctx.fillStyle = "rgba(53,224,255,0.07)";
+      rrect(x+1,y+1,this.cell-2,this.cell-2,this.cell*0.16); ctx.fill();
+      ctx.strokeStyle="rgba(53,224,255,0.35)"; ctx.lineWidth=2; ctx.stroke();
+    }
+    // hint flash
+    if(this.hintFlash>0 && this.hintPiece){
+      const hp=this.hintPiece;
+      const a=0.25+0.35*Math.abs(Math.sin(this.t*8));
+      ctx.globalAlpha=a;
+      for(const c0 of hp.homeCells){
+        const x=this.ox+c0.x*this.cell, y=this.oy+c0.y*this.cell;
+        ctx.fillStyle=hp.color; rrect(x+2,y+2,this.cell-4,this.cell-4,this.cell*0.16); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
+    // placed pieces
+    for(const p of this.pieces){
+      if(p.placed) this.drawPiece(p, this.ox+p.gx*this.cell, this.oy+p.gy*this.cell, this.cell);
+    }
+    // tray panel
+    const trayTop=this.oy+this.rows*this.cell+6;
+    ctx.fillStyle="rgba(22,35,58,0.6)";
+    rrect(W*0.03, trayTop, W*0.94, H-trayTop-10, 18); ctx.fill();
+    txt("TAP = TURN", W/2, trayTop+H*0.012+8, 13, COL.dim);
+    for(const p of this.pieces){
+      if(!p.placed && (!this.drag || this.drag.p!==p))
+        this.drawPiece(p, p.tx, p.ty, this.trayCell);
+    }
+    // dragging piece on top, lifted above finger
+    if(this.drag){
+      const d=this.drag;
+      this.drawPiece(d.p, d.x-d.offX, d.y-d.offY-this.cell*1.1, this.cell, 0.9);
+    }
+    updateFx(dt); drawFx();
+    missionTop("BUILD BAY", COL.yellow, null, null);
+    // hint button (in the top bar, clear of the board)
+    if(!this.won && this.hints>0){
+      button(W-134,8,120,38,"HINT ("+this.hints+")",()=>{
+        // flash the correct spot for an unplaced piece whose home isn't taken
+        const occNow=this.occupied();
+        const un=this.pieces.filter(p=>!p.placed &&
+          p.homeCells.every(c=>!occNow.has(c.x+","+c.y)));
+        if(!un.length) return;
+        const p=un[0];
+        this.hintPiece={color:p.color, homeCells:p.homeCells};
+        this.hintFlash=2.4; this.hints--; sfx.pop();
+      },{stroke:COL.cyan,size:15});
+    }
+    txt("LV "+this.level, W/2, 60, 15, COL.dim);
+    if(this.won && this.result){
+      drawResult("BUILT IT!", [this.result.pieces+" PIECES — PERFECT FIT!"], this.result.b, "build");
+    }
+  }
+};
+
+/* =====================================================================
+   TRUCK RUN
+=======================================================================*/
+scenes.truck = {
+  enter(){
+    this.t=0; this.timeLeft=CONFIG.roundSeconds; this.shields=CONFIG.shields;
+    this.level=S.lv.truck;
+    this.speed = Math.min(W,H)*0.9 + this.level*22;
+    this.groundY=()=>H*0.78;
+    this.y=0; this.vy=0; this.grounded=true; this.jumps=0; this.holding=false;
+    this.items=[]; this.spawnX=W+100;
+    this.dist=0; this.crates=0; this.coins=0; this.invuln=0; this.airT=0;
+    this.started=!!S.seen.truck; this.over=false; this.result=null;
+    this.wheelRot=0;
+  },
+  scale(){ return Math.min(W,H)/480; },
+  finish(msg){
+    if(this.over) return;
+    this.over=true;
+    const b=awardBolts(this.crates*2 + this.coins + Math.floor(this.dist/400));
+    levelUp("truck");
+    this.result={b, msg:msg||"GREAT DRIVING!"};
+    sfx.win();
+  },
+  spawnPattern(){
+    const s=this.scale();
+    const gY=this.groundY();
+    const kind=pick(["crates","crates","rock","coins","ramp","rock"]);
+    let x=this.spawnX;
+    if(kind==="crates"){
+      const n=ri(1,3);
+      for(let i=0;i<n;i++)
+        this.items.push({k:"crate", x:x+i*46*s, y:gY-40*s, w:40*s, h:40*s, dead:false});
+      x+=n*46*s;
+    }else if(kind==="rock"){
+      this.items.push({k:"rock", x, y:gY-46*s, w:52*s, h:46*s, dead:false});
+      x+=52*s;
+    }else if(kind==="coins"){
+      const n=ri(3,5);
+      for(let i=0;i<n;i++){
+        const arc=Math.sin(i/(n-1)*Math.PI);
+        this.items.push({k:"coin", x:x+i*54*s, y:gY-60*s-arc*120*s, r:16*s, dead:false});
+      }
+      x+=n*54*s;
+    }else{
+      this.items.push({k:"ramp", x, y:gY, w:110*s, h:64*s, dead:false, used:false});
+      x+=110*s;
+    }
+    this.spawnX = x + rand(220,420)*s + Math.max(0, 60-this.level*4)*s;
+  },
+  onDown(){
+    if(!this.started||this.over) return;
+    this.holding=true;
+    if(this.grounded || this.jumps<2){
+      this.vy = -Math.min(W,H)*3.4;
+      this.grounded=false; this.jumps++;
+      sfx.jump();
+    }
+  },
+  onUp(){ this.holding=false; },
+  draw(dt){
+    this.t+=dt;
+    const s=this.scale(), gY=this.groundY();
+    // sky/bg
+    ctx.fillStyle=COL.bg; ctx.fillRect(0,0,W,H);
+    // stars + mountains parallax
+    ctx.fillStyle="rgba(53,224,255,0.15)";
+    for(let i=0;i<14;i++){
+      const x=((i*173 - this.dist*0.12)%(W+80)+W+80)%(W+80)-40;
+      ctx.fillRect(x,(i*97)%Math.max(1,gY*0.6),3,3);
+    }
+    ctx.fillStyle="#101c31";
+    ctx.beginPath(); ctx.moveTo(0,gY);
+    for(let x=0;x<=W;x+=60){
+      const h=60+50*Math.sin((x+this.dist*0.25)*0.008);
+      ctx.lineTo(x,gY-h*s);
+    }
+    ctx.lineTo(W,gY); ctx.closePath(); ctx.fill();
+    // ground
+    ctx.fillStyle="#182842"; ctx.fillRect(0,gY,W,H-gY);
+    ctx.strokeStyle="#223a5e"; ctx.lineWidth=3;
+    ctx.beginPath();
+    for(let x=-((this.dist)%80); x<W; x+=80){
+      ctx.moveTo(x,gY+18*s); ctx.lineTo(x+40,gY+18*s);
+    }
+    ctx.stroke();
+    ctx.strokeStyle="#2c405f"; ctx.beginPath(); ctx.moveTo(0,gY); ctx.lineTo(W,gY); ctx.stroke();
+
+    if(!this.started){
+      hintOverlay("truck", this.t, (t)=>{
+        txt("TAP TO JUMP!", W/2, H*0.18, Math.min(34,W*0.08), COL.text);
+        txt("TAP AGAIN = DOUBLE JUMP", W/2, H*0.26, Math.min(20,W*0.05), COL.cyan);
+        const ph=(t%1.4)/1.4;
+        const jy = -Math.abs(Math.sin(ph*Math.PI))*90;
+        this.drawTruck(W*0.5, H*0.5+jy, s*1.1, ph*10);
+        txt("SMASH CRATES!  JUMP ROCKS!", W/2, H*0.66, Math.min(20,W*0.05), COL.lime);
+      }, ()=>{ this.started=true; });
+      missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
+      return;
+    }
+    if(!this.over){
+      this.timeLeft-=dt;
+      if(this.timeLeft<=0) this.finish();
+      const g = (this.holding && this.vy<0)? 3200*0.55 : 3200;
+      this.vy += g*s*dt*2.2;
+      this.y += this.vy*dt;
+      if(this.y>0){ this.y=0; if(!this.grounded){ sfx.land(); burst(W*0.25, gY, "#4a5f85", 6, 160, 0.4);} this.grounded=true; this.jumps=0; }
+      this.dist += this.speed*dt;
+      this.wheelRot += this.speed*dt/(26*s);
+      if(this.invuln>0) this.invuln-=dt;
+      // move spawn cursor with world
+      this.spawnX -= this.speed*dt;
+      while(this.spawnX < W+300) this.spawnPattern();
+      for(const it of this.items) it.x -= this.speed*dt;
+      this.items=this.items.filter(it=>!it.dead && it.x>-200);
+      // collisions
+      const tx=W*0.25, ty=gY+this.y;
+      const tw=96*s, th=56*s;
+      const box={x:tx-tw/2, y:ty-th-18*s, w:tw, h:th+18*s};
+      for(const it of this.items){
+        if(it.dead) continue;
+        if(it.k==="coin"){
+          if(Math.abs(it.x-tx)<tw/2+it.r && Math.abs(it.y-(ty-th/2))<th/2+it.r+20*s){
+            it.dead=true; this.coins++; sfx.coin();
+            floatText("+1", it.x, it.y-10, COL.orange, 22);
+            burst(it.x,it.y,COL.orange,6,180,0.4);
+          }
+          continue;
+        }
+        const ov = box.x<it.x+it.w && box.x+box.w>it.x && box.y<it.y+it.h && box.y+box.h>it.y;
+        if(!ov) continue;
+        if(it.k==="crate"){
+          it.dead=true; this.crates++;
+          sfx.smash(); addShake(6);
+          burst(it.x+it.w/2, it.y+it.h/2, COL.yellow, 14, 300, 0.6);
+          floatText("SMASH!", it.x+it.w/2, it.y-10, COL.yellow, 22);
+        }else if(it.k==="rock"){
+          if(this.invuln<=0){
+            it.dead=true;
+            this.shields--; this.invuln=1.2;
+            sfx.wrong(); addShake(12);
+            burst(it.x+it.w/2, it.y+it.h/2, "#8aa3c4", 16, 320, 0.7);
+            floatText("BONK!", it.x+it.w/2, it.y-14, COL.red, 26);
+            if(this.shields<=0) this.finish("TRUCK NEEDS REPAIRS!");
+          }
+        }else if(it.k==="ramp" && !it.used && this.grounded){
+          it.used=true;
+          this.vy=-Math.min(W,H)*3.9; this.grounded=false; this.jumps=2;
+          sfx.jump(); floatText("BIG AIR!", tx, ty-th-60*s, COL.cyan, 28);
+        }
+      }
+    }
+    // items
+    const sNow=this.scale();
+    for(const it of this.items){
+      if(it.k==="crate"){
+        ctx.fillStyle="#b9822f"; rrect(it.x,it.y,it.w,it.h,4); ctx.fill();
+        ctx.strokeStyle="#7a5518"; ctx.lineWidth=3; ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(it.x,it.y); ctx.lineTo(it.x+it.w,it.y+it.h);
+        ctx.moveTo(it.x+it.w,it.y); ctx.lineTo(it.x,it.y+it.h); ctx.stroke();
+      }else if(it.k==="rock"){
+        ctx.fillStyle="#54637d";
+        ctx.beginPath();
+        ctx.moveTo(it.x,it.y+it.h); ctx.lineTo(it.x+it.w*0.15,it.y+it.h*0.3);
+        ctx.lineTo(it.x+it.w*0.5,it.y); ctx.lineTo(it.x+it.w*0.85,it.y+it.h*0.35);
+        ctx.lineTo(it.x+it.w,it.y+it.h); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle="#33405a"; ctx.lineWidth=3; ctx.stroke();
+      }else if(it.k==="coin"){
+        drawBoltIcon(it.x,it.y,it.r);
+      }else if(it.k==="ramp"){
+        ctx.fillStyle="#2c9bd6";
+        ctx.beginPath(); ctx.moveTo(it.x,it.y); ctx.lineTo(it.x+it.w,it.y);
+        ctx.lineTo(it.x+it.w,it.y-it.h); ctx.closePath(); ctx.fill();
+        ctx.strokeStyle="#1b6f9e"; ctx.lineWidth=3; ctx.stroke();
+      }
+    }
+    // truck
+    const flick = this.invuln>0 && Math.floor(this.t*14)%2===0;
+    if(!flick) this.drawTruck(W*0.25, this.groundY()+this.y, sNow, this.wheelRot);
+    updateFx(dt); drawFx();
+    // HUD
+    txt("SMASHED: "+this.crates, W*0.25, 74, 17, COL.yellow);
+    missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
+    if(this.over && this.result){
+      drawResult("RUN DONE!", [this.result.msg, "CRATES: "+this.crates+"   BOLTS GRABBED: "+this.coins], this.result.b, "truck");
+    }
+  },
+  drawTruck(x, groundY, s, wheelRot){
+    const P=PAINTS[S.paint];
+    ctx.save(); ctx.translate(x,groundY);
+    // wheels
+    const wy=-24*s;
+    for(const wx of [-34*s, 34*s]){
+      ctx.fillStyle="#141c2c";
+      ctx.beginPath(); ctx.arc(wx,wy,26*s,0,TAU); ctx.fill();
+      ctx.strokeStyle="#2c405f"; ctx.lineWidth=4*s; ctx.stroke();
+      ctx.save(); ctx.translate(wx,wy); ctx.rotate(wheelRot);
+      ctx.strokeStyle="#44597d"; ctx.lineWidth=3*s;
+      for(let i=0;i<4;i++){ const a=i*Math.PI/2;
+        ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(Math.cos(a)*20*s,Math.sin(a)*20*s); ctx.stroke(); }
+      ctx.fillStyle="#5f7396"; ctx.beginPath(); ctx.arc(0,0,7*s,0,TAU); ctx.fill();
+      ctx.restore();
+    }
+    // body
+    ctx.fillStyle=P.main;
+    rrect(-52*s,-70*s,104*s,32*s,8*s); ctx.fill();
+    ctx.strokeStyle=P.dark; ctx.lineWidth=3*s; ctx.stroke();
+    // cab
+    ctx.fillStyle=P.dark;
+    rrect(-20*s,-96*s,48*s,30*s,8*s); ctx.fill();
+    ctx.fillStyle="#bfeaff";
+    rrect(-12*s,-90*s,24*s,16*s,4*s); ctx.fill();
+    // flame decal
+    ctx.fillStyle=P.glow;
+    ctx.beginPath();
+    ctx.moveTo(-48*s,-54*s); ctx.lineTo(-30*s,-62*s); ctx.lineTo(-34*s,-52*s);
+    ctx.lineTo(-16*s,-60*s); ctx.lineTo(-24*s,-48*s); ctx.closePath(); ctx.fill();
+    ctx.restore();
+  }
+};
+
+/* =====================================================================
+   VICTORY — Titan rebuilt
+=======================================================================*/
+scenes.victory = {
+  enter(){ this.t=0; if(!S.rebuilt){ S.rebuilt=true; save(); } sfx.fanfare(); this.fw=0; },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    this.fw-=dt;
+    if(this.fw<=0){
+      this.fw=rand(0.25,0.6);
+      burst(rand(W*0.15,W*0.85), rand(H*0.1,H*0.45),
+            pick([COL.cyan,COL.orange,COL.lime,COL.purple,COL.yellow]), 22, 380, 1.1);
+    }
+    const s=Math.min(W*0.6,H*0.55)/300 * (0.7+0.3*ease(this.t/1.2));
+    drawTitan(W/2, H*0.72, s, PARTS.length, this.t, false);
+    updateFx(dt); drawFx();
+    const ts=Math.min(52,W*0.11);
+    txt("TITAN", W/2, H*0.12, ts, COL.cyan, "center","900",true);
+    txt("REBUILT!", W/2, H*0.12+ts*0.95, ts, COL.lime, "center","900",true);
+    if(this.t>1.5){
+      txt("NEW: PAINT SHOP + ENERGY MODE", W/2, H*0.80, Math.min(18,W*0.045), COL.yellow);
+      const bw=Math.min(280,W*0.7);
+      button(W/2-bw/2, H*0.86, bw, 62, "TO THE GARAGE", ()=>go("home"),
+        {color:"#173a1f", stroke:COL.lime, glow:COL.lime});
+    }
+  }
+};
+
+/* =====================================================================
+   PAINT SHOP
+=======================================================================*/
+scenes.paint = {
+  enter(){ this.t=0; },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    missionTop("PAINT SHOP", COL.purple, null, null);
+    const s=Math.min(W*0.5,H*0.45)/300;
+    drawTitan(W/2, H*0.62, s, PARTS.length, this.t, false);
+    const n=PAINTS.length;
+    const bw=Math.min(150,(W-40)/n-10), bh=64;
+    const total=n*bw+(n-1)*12;
+    for(let i=0;i<n;i++){
+      const p=PAINTS[i];
+      const x=W/2-total/2+i*(bw+12), y=H*0.72;
+      button(x,y,bw,bh,null,()=>{ S.paint=i; save(); sfx.install();
+        burst(W/2,H*0.4,p.glow,24,360); },
+        {color: S.paint===i? "#22344f": COL.panel, stroke: S.paint===i? p.main: COL.line, r:16});
+      ctx.fillStyle=p.main; ctx.beginPath(); ctx.arc(x+bw/2, y+24, 14,0,TAU); ctx.fill();
+      txt(p.name, x+bw/2, y+bh-16, 14, COL.text);
+    }
+  }
+};
+
+/* =====================================================================
+   PARENT CORNER
+=======================================================================*/
+scenes.parent = {
+  enter(){ this.confirm=0; },
+  draw(dt){
+    drawBg(dt);
+    missionTop("GROWN-UP CORNER", COL.dim, null, null);
+    const pw=Math.min(380,W*0.9), px=W/2-pw/2;
+    let y=H*0.2;
+    txt("Missions earn bolts. Bolts rebuild Titan.", W/2, y, 17, COL.text); y+=26;
+    txt("Rounds last "+CONFIG.roundSeconds+"s. No internet needed.", W/2, y, 15, COL.dim); y+=44;
+    button(px, y, pw, 56, S.snd? "SOUND: ON":"SOUND: OFF", ()=>{S.snd=!S.snd; save();}); y+=70;
+    button(px, y, pw, 56,
+      this.confirm? "TAP AGAIN TO ERASE ALL PROGRESS":"RESET PROGRESS",
+      ()=>{
+        if(this.confirm){ S=defaultSave(); save(); go("intro"); }
+        else { this.confirm=1; }
+      }, {stroke:this.confirm?COL.red:COL.line, textColor:this.confirm?COL.red:COL.text, size:18});
+    y+=70;
+    button(px, y, pw, 56, "BACK TO GAME", ()=>go("home"), {stroke:COL.cyan});
+  }
+};
+
+/* ---------------- input wiring ---------------- */
+function evPoint(e){ return {x:e.clientX, y:e.clientY}; }
+canvas.addEventListener("pointerdown", e=>{
+  e.preventDefault();
+  try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
+  unlockAudio();
+  const p=evPoint(e);
+  if(hitButtons(p)) return;
+  if(scene && scene.onDown) scene.onDown(p);
+}, {passive:false});
+canvas.addEventListener("pointermove", e=>{
+  e.preventDefault();
+  if(scene && scene.onMove) scene.onMove(evPoint(e));
+}, {passive:false});
+canvas.addEventListener("pointerup", e=>{
+  e.preventDefault();
+  if(scene && scene.onUp) scene.onUp(evPoint(e));
+}, {passive:false});
+canvas.addEventListener("pointercancel", e=>{
+  if(scene && scene.onUp) scene.onUp(evPoint(e));
+});
+canvas.addEventListener("contextmenu", e=>e.preventDefault());
+
+/* ---------------- main loop ---------------- */
+let lastT=performance.now();
+function frame(now){
+  const dt=clamp((now-lastT)/1000, 0, 0.05);
+  lastT=now;
+  buttons=[];
+  ctx.save();
+  if(shake>0){
+    ctx.translate(rand(-shake,shake), rand(-shake,shake));
+  }
+  try{
+    if(scene && scene.draw) scene.draw(dt);
+  }catch(err){
+    ctx.restore();
+    ctx.fillStyle=COL.bg; ctx.fillRect(0,0,W,H);
+    txt("Oops! Tap to restart.", W/2, H/2, 22, COL.text);
+    buttons=[{x:0,y:0,w:W,h:H,cb:()=>go("home")}];
+    requestAnimationFrame(frame);
+    return;
+  }
+  ctx.restore();
+  requestAnimationFrame(frame);
+}
+
+/* expose a tiny debug handle (harmless in production) */
+window.__tg = {go, scenes, get state(){return S;}};
+
+go(S.intro? "home" : "intro");
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
