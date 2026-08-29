@@ -45,6 +45,9 @@ const PARTS = [
   {name:"VISOR",     cost:35},
   {name:"TURBO PACK",cost:45}
 ];
+// Ranks give leveling a meaning beyond a number
+const RANKS = ["SCRAP","SCOUT","GUARDIAN","VANGUARD","COLOSSUS","TITAN PRIME"];
+function rankName(n){ return RANKS[Math.min(n, RANKS.length-1)] + (n>=RANKS.length? " +"+(n-RANKS.length+1) : ""); }
 const PAINTS = [
   {name:"STORM",  main:"#35e0ff", dark:"#1479a0", glow:"#8ff3ff"},
   {name:"LAVA",   main:"#ff8a2a", dark:"#b04a10", glow:"#ffc98a"},
@@ -60,11 +63,37 @@ const COL = {
   sludge:"#6b7280"
 };
 
+/* ---------------- MISSION REGISTRY ----------------
+   To add a new game: write a scene (scenes.myGame = {...}) that calls
+   awardBolts(n) and levelUp("myGame") when it finishes, add "myGame:1"
+   to lv in defaultSave(), and add one entry here. Nothing else changes —
+   the garage lays out the doors automatically.                        */
+const MISSIONS = [
+  {key:"slash", name:"SLASH LAB", sub:"SLICE!", color:COL.red,
+   icon:(x,y,s)=>{
+     ctx.strokeStyle=COL.text; ctx.lineWidth=4;
+     ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(x-6*s,y,14*s,Math.PI*0.6,Math.PI*1.6); ctx.fill();
+     ctx.beginPath(); ctx.arc(x+6*s,y,14*s,Math.PI*1.6,Math.PI*0.6); ctx.fill();
+     ctx.beginPath(); ctx.moveTo(x-16*s,y+18*s); ctx.lineTo(x+16*s,y-18*s); ctx.stroke(); }},
+  {key:"build", name:"BUILD BAY", sub:"SOLVE!", color:COL.yellow,
+   icon:(x,y,s)=>{ ctx.fillStyle=COL.yellow;
+     rrect(x-16*s,y-2*s,14*s,14*s,3); ctx.fill();
+     rrect(x+2*s,y-2*s,14*s,14*s,3); ctx.fill();
+     rrect(x-7*s,y-16*s,14*s,14*s,3); ctx.fill(); }},
+  {key:"truck", name:"TRUCK RUN", sub:"SMASH!", color:COL.lime,
+   icon:(x,y,s)=>{ ctx.fillStyle=COL.lime;
+     rrect(x-16*s,y-14*s,24*s,12*s,3); ctx.fill();
+     rrect(x-16*s,y-4*s,32*s,8*s,3); ctx.fill();
+     ctx.fillStyle="#222c3d";
+     ctx.beginPath(); ctx.arc(x-9*s,y+8*s,7*s,0,TAU); ctx.fill();
+     ctx.beginPath(); ctx.arc(x+9*s,y+8*s,7*s,0,TAU); ctx.fill(); }}
+];
+
 /* ---------------- save / load ---------------- */
 const SAVE_KEY = "titan-garage-v1";
 function defaultSave(){
   return {v:1, bolts:0, parts:0, lv:{slash:1,build:1,truck:1},
-          snd:true, voice:true, paint:0, rebuilt:false, power:0, powerLv:0,
+          snd:true, paint:0, rebuilt:false, power:0, powerLv:0,
           seen:{}, intro:false};
 }
 let S = defaultSave();
@@ -138,19 +167,6 @@ const sfx = {
   win(){ [523,659,784,1046].forEach((f,i)=>setTimeout(()=>tone(f,0.16,"square",0.12),i*110)); },
   fanfare(){ [392,523,659,784,1046,1318].forEach((f,i)=>setTimeout(()=>tone(f,0.2,"square",0.13),i*130)); }
 };
-
-/* ---------------- Titan's voice (Web Speech API, no files) ---------------- */
-let speechReady=false;
-function say(text){
-  if(!S.voice) return;
-  try{
-    if(!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
-    speechSynthesis.cancel();
-    const u = new SpeechSynthesisUtterance(text);
-    u.rate=1.0; u.pitch=0.6; u.volume=1;
-    speechSynthesis.speak(u);
-  }catch(e){}
-}
 
 /* ---------------- small helpers ---------------- */
 const TAU = Math.PI*2;
@@ -383,8 +399,7 @@ scenes.intro = {
     }
     const bw=Math.min(280,W*0.7);
     button(cx-bw/2, H*0.88, bw, 64, this.page<2?"NEXT":"LET'S GO!", ()=>{
-      if(this.page===0){ this.page=1; say("Play missions to earn bolts!"); }
-      else if(this.page===1){ this.page=2; say("Use the bolts to rebuild me! I'm counting on you, hero!"); }
+      if(this.page<2){ this.page++; }
       else { S.intro=true; save(); go("home"); }
     }, {color:this.page<2?COL.panel2:"#173a1f", stroke:this.page<2?COL.line:COL.lime, glow:this.page<2?null:COL.lime});
   }
@@ -394,17 +409,16 @@ scenes.intro = {
    HOME — the garage
 =======================================================================*/
 scenes.home = {
-  t:0, flash:0, vt:0, needSay:true, titanPos:null,
-  enter(){ this.t=0; this.flash=0; this.vt=0; this.needSay=true; },
+  t:0, flash:0, vt:0, titanPos:null,
+  enter(){ this.t=0; this.flash=0; this.vt=0; },
   bubbleLine(){
     if(S.parts<PARTS.length){
       const cost=PARTS[S.parts].cost, name=PARTS[S.parts].name;
-      if(S.bolts>=cost) return {text:"INSTALL MY "+name+"!", speak:"Install my "+name.toLowerCase()+"!"};
-      return {text:"GET "+cost+" BOLTS FOR MY "+name+"!",
-              speak:"I need "+cost+" bolts for my "+name.toLowerCase()+". Play missions!"};
+      if(S.bolts>=cost) return {text:"REPAIR MY "+name+"!"};
+      return {text:"I NEED "+cost+" BOLTS FOR MY "+name+"!"};
     }
-    if(S.power>=100) return {text:"PRESS POWER UP!", speak:"My energy is full! Press power up!"};
-    return {text:"PLAY MISSIONS TO CHARGE ME!", speak:"Play missions to charge my energy!"};
+    if(S.power>=100) return {text:"ENERGY FULL — POWER ME UP!"};
+    return {text:"PLAY MISSIONS TO CHARGE ME!"};
   },
   draw(dt){
     this.t+=dt;
@@ -467,7 +481,6 @@ scenes.home = {
 
     // ----- Titan speech bubble
     const line=this.bubbleLine();
-    if(this.needSay){ this.needSay=false; say(line.speak); }
     const bubW=Math.min(W*0.86, 380), bubH=42;
     const headY=titanFootY-292*titanS;
     const bubX=W/2-bubW/2;
@@ -485,7 +498,7 @@ scenes.home = {
     if(S.parts<PARTS.length){
       txt("PARTS: "+S.parts+" / "+PARTS.length, titanCX, titanFootY+18, 16, COL.dim);
     }else if(S.powerLv>0){
-      txt("TITAN RANK "+S.powerLv, titanCX, titanFootY+18, 17, COL.yellow);
+      txt("RANK "+S.powerLv+" · "+rankName(S.powerLv), titanCX, titanFootY+18, 17, COL.yellow);
     }
 
     // ----- one action row near titan
@@ -495,18 +508,10 @@ scenes.home = {
     if(S.parts<PARTS.length){
       const name = PARTS[S.parts].name;
       if(canBuy){
-        const label="INSTALL "+name+" · "+cost;
+        const label="REPAIR "+name+" · "+cost;
         button(bx, by, bw, 54, label, ()=>{
           if(S.parts>=PARTS.length) return;
-          S.bolts-=cost; S.parts++; save();
-          sfx.install(); addShake(7);
-          this.flash=0.6;
-          const tp=this.titanPos;
-          burst(tp.cx, tp.footY-150*tp.s, PAINTS[S.paint].glow, 30, 380);
-          floatText("CLANK!", tp.cx, tp.footY-220*tp.s, COL.text, 26);
-          say(name.toLowerCase()+" online!");
-          this.needSay=false;
-          if(S.parts>=PARTS.length){ this.vt=1.5; }
+          go("repair");
         }, {color:"#173a1f", stroke:COL.lime, glow:COL.lime,
             size:Math.min(21, bw/label.length*1.85)});
       }else{
@@ -530,43 +535,24 @@ scenes.home = {
           burst(tp.cx, tp.footY-180*tp.s, COL.lime, 40, 420, 1);
           burst(tp.cx, tp.footY-260*tp.s, COL.yellow, 24, 380, 1);
           addShake(9);
-          say("Maximum power! Titan rank "+S.powerLv+"!");
+          floatText("RANK UP — "+rankName(S.powerLv)+"!", W/2, H*0.26, COL.lime, 28);
           if(S.powerLv<PAINTS.length)
-            floatText("NEW PAINT UNLOCKED!", W/2, H*0.28, COL.yellow, 26);
-          this.needSay=false;
+            floatText("NEW PAINT UNLOCKED!", W/2, H*0.32, COL.yellow, 24);
         },{color:"#173a1f",stroke:COL.lime,glow:COL.lime});
       }else{
         button(bx,by+26,bw,46,"PAINT SHOP",()=>go("paint"),{stroke:COL.purple});
       }
     }
 
-    // ----- mission doors
+    // ----- mission doors (driven by the MISSIONS registry — see top of file)
     const M = missionArea;
-    const defs = [
-      {key:"slash", name:"SLASH LAB",  sub:"SLICE!", color:COL.red,
-       icon:(x,y,s)=>{ // sliced fruit
-         ctx.strokeStyle=COL.text; ctx.lineWidth=4;
-         ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(x-6*s,y,14*s,Math.PI*0.6,Math.PI*1.6); ctx.fill();
-         ctx.beginPath(); ctx.arc(x+6*s,y,14*s,Math.PI*1.6,Math.PI*0.6); ctx.fill();
-         ctx.beginPath(); ctx.moveTo(x-16*s,y+18*s); ctx.lineTo(x+16*s,y-18*s); ctx.stroke(); }},
-      {key:"build", name:"BUILD BAY",  sub:"SOLVE!", color:COL.yellow,
-       icon:(x,y,s)=>{ ctx.fillStyle=COL.yellow;
-         rrect(x-16*s,y-2*s,14*s,14*s,3); ctx.fill();
-         rrect(x+2*s,y-2*s,14*s,14*s,3); ctx.fill();
-         rrect(x-7*s,y-16*s,14*s,14*s,3); ctx.fill(); }},
-      {key:"truck", name:"TRUCK RUN",  sub:"SMASH!", color:COL.lime,
-       icon:(x,y,s)=>{ ctx.fillStyle=COL.lime;
-         rrect(x-16*s,y-14*s,24*s,12*s,3); ctx.fill();
-         rrect(x-16*s,y-4*s,32*s,8*s,3); ctx.fill();
-         ctx.fillStyle="#222c3d";
-         ctx.beginPath(); ctx.arc(x-9*s,y+8*s,7*s,0,TAU); ctx.fill();
-         ctx.beginPath(); ctx.arc(x+9*s,y+8*s,7*s,0,TAU); ctx.fill(); }}
-    ];
-    for(let i=0;i<3;i++){
+    const defs = MISSIONS;
+    const nM = defs.length;
+    for(let i=0;i<nM;i++){
       const d=defs[i];
       let bx2,by2,bw2,bh2;
-      if(M.col){ bh2=(M.h-28)/3; bw2=M.w; bx2=M.x; by2=M.y+i*(bh2+14); }
-      else{ bw2=(M.w-24)/3; bh2=M.h-10; bx2=M.x+i*(bw2+12); by2=M.y; }
+      if(M.col){ bh2=(M.h-(nM-1)*14)/nM; bw2=M.w; bx2=M.x; by2=M.y+i*(bh2+14); }
+      else{ bw2=(M.w-(nM-1)*12)/nM; bh2=M.h-10; bx2=M.x+i*(bw2+12); by2=M.y; }
       button(bx2,by2,bw2,bh2,null,()=>go(d.key),{color:COL.panel,stroke:d.color,r:20});
       const cxb=bx2+bw2/2;
       d.icon(cxb, by2+bh2*0.34, Math.min(bw2,bh2)/70);
@@ -642,34 +628,41 @@ function hintOverlay(key, t, drawDemo, startCb){
 /* =====================================================================
    SLASH LAB
 =======================================================================*/
+/* Rules are ICON-FIRST: every rule renders as a picture of what to slice.
+   No reading and no math required — color, shape, size, and combinations. */
 function makeRule(level, notLabel){
   const colorRules = [
-    {kind:"color", val:"red",    label:"SLICE ONLY RED",    say:"Slice only red!",    color:COL.red},
-    {kind:"color", val:"blue",   label:"SLICE ONLY BLUE",   say:"Slice only blue!",   color:COL.cyan},
-    {kind:"color", val:"green",  label:"SLICE ONLY GREEN",  say:"Slice only green!",  color:COL.lime},
-    {kind:"color", val:"yellow", label:"SLICE ONLY YELLOW", say:"Slice only yellow!", color:COL.yellow}
+    {kind:"color", val:"red",    label:"SLICE RED",    color:COL.red},
+    {kind:"color", val:"blue",   label:"SLICE BLUE",   color:COL.cyan},
+    {kind:"color", val:"green",  label:"SLICE GREEN",  color:COL.lime},
+    {kind:"color", val:"yellow", label:"SLICE YELLOW", color:COL.yellow}
   ];
   const shapeRules = [
-    {kind:"shape", val:"circle", label:"SLICE ONLY CIRCLES",   say:"Slice only circles!",   color:COL.text},
-    {kind:"shape", val:"square", label:"SLICE ONLY SQUARES",   say:"Slice only squares!",   color:COL.text},
-    {kind:"shape", val:"tri",    label:"SLICE ONLY TRIANGLES", say:"Slice only triangles!", color:COL.text},
-    {kind:"shape", val:"star",   label:"SLICE ONLY STARS",     say:"Slice only stars!",     color:COL.text}
+    {kind:"shape", val:"circle", label:"SLICE CIRCLES",   color:COL.text},
+    {kind:"shape", val:"square", label:"SLICE SQUARES",   color:COL.text},
+    {kind:"shape", val:"tri",    label:"SLICE TRIANGLES", color:COL.text},
+    {kind:"shape", val:"star",   label:"SLICE STARS",     color:COL.text}
   ];
-  const numRules = [
-    {kind:"num", test:n=>n>=6, label:"SLICE BIG NUMBERS  6·7·8·9", say:"Slice the big numbers! Six and up!", color:COL.orange},
-    {kind:"num", test:n=>n<=4, label:"SLICE SMALL NUMBERS  1·2·3·4", say:"Slice the small numbers! Four and under!", color:COL.orange}
-  ];
-  const evenRules = [
-    {kind:"num", test:n=>n%2===0, label:"SLICE EVEN  2·4·6·8", say:"Slice the even numbers!", color:COL.purple},
-    {kind:"num", test:n=>n%2===1, label:"SLICE ODD  1·3·5·7·9", say:"Slice the odd numbers!", color:COL.purple}
+  const sizeRules = [
+    {kind:"size", val:"big",   label:"SLICE BIG ONES",   color:COL.orange},
+    {kind:"size", val:"small", label:"SLICE SMALL ONES", color:COL.orange}
   ];
   let pool=[];
-  if(level<2) return {kind:"all", label:"SLICE EVERYTHING!", say:"Slice everything!", color:COL.lime};
+  if(level<2) return {kind:"all", label:"SLICE EVERYTHING!", color:COL.lime};
   pool = pool.concat(colorRules);
-  if(level>=4) pool = pool.concat(shapeRules);
-  if(level>=6) pool = pool.concat(numRules);
-  if(level>=9) pool = pool.concat(evenRules);
-  let r = pick(pool);
+  if(level>=3) pool = pool.concat(shapeRules);
+  if(level>=5) pool = pool.concat(sizeRules);
+  let r;
+  // level 7+: sometimes a two-part rule (e.g. red circles) — a real step up,
+  // still entirely visual
+  if(level>=7 && Math.random()<0.4){
+    const c=pick(colorRules), sh=pick(shapeRules);
+    r = {kind:"combo", val:c.val, val2:sh.val,
+         label:"SLICE "+c.label.split(" ")[1]+" "+sh.label.split(" ")[1],
+         color:c.color, comboColor:c.val, comboShape:sh.val};
+  }else{
+    r = pick(pool);
+  }
   for(let i=0; i<12 && notLabel && r.label===notLabel; i++) r = pick(pool);
   return r;
 }
@@ -678,10 +671,57 @@ function ruleMatch(rule,o){
   if(rule.kind==="all") return true;
   if(rule.kind==="color") return o.color===rule.val;
   if(rule.kind==="shape") return o.shape===rule.val;
-  if(rule.kind==="num") return rule.test(o.num);
+  if(rule.kind==="size")  return o.size===rule.val;
+  if(rule.kind==="combo") return o.color===rule.val && o.shape===rule.val2;
   return true;
 }
 const FRUITCOL = {red:COL.red, blue:COL.cyan, green:COL.lime, yellow:COL.yellow};
+
+/* Draws a shape icon — used both for falling objects and the rule chip */
+function drawShapeIcon(shape, x, y, r, fill, stroke){
+  ctx.save(); ctx.translate(x,y);
+  ctx.fillStyle=fill; ctx.strokeStyle=stroke||"rgba(0,0,0,0.35)"; ctx.lineWidth=3;
+  if(shape==="circle"){ ctx.beginPath(); ctx.arc(0,0,r,0,TAU); ctx.fill(); ctx.stroke(); }
+  else if(shape==="square"){ rrect(-r,-r,r*2,r*2,r*0.3); ctx.fill(); ctx.stroke(); }
+  else if(shape==="tri"){ ctx.beginPath(); ctx.moveTo(0,-r*1.1);
+    ctx.lineTo(r,r*0.8); ctx.lineTo(-r,r*0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  else{ ctx.beginPath();
+    for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5;
+      const rr=i%2===0?r*1.15:r*0.5;
+      const px=Math.cos(a)*rr,py=Math.sin(a)*rr;
+      if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+    ctx.closePath(); ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+}
+/* The rule chip: picture on the left, short words on the right */
+function drawRuleChip(rule, cx, cy, w, h){
+  ctx.fillStyle=COL.panel; rrect(cx-w/2, cy-h/2, w, h, 12); ctx.fill();
+  ctx.strokeStyle=rule.color; ctx.lineWidth=3; ctx.stroke();
+  const ix = cx-w/2+30, r=Math.min(15, h*0.34);
+  if(rule.kind==="all"){
+    // three little shapes in three colors
+    drawShapeIcon("circle", ix-12, cy, r*0.7, COL.red);
+    drawShapeIcon("square", ix+6,  cy, r*0.7, COL.cyan);
+    drawShapeIcon("star",   ix+24, cy, r*0.7, COL.lime);
+  }else if(rule.kind==="color"){
+    drawShapeIcon("circle", ix, cy, r, FRUITCOL[rule.val]);
+  }else if(rule.kind==="shape"){
+    drawShapeIcon(rule.val, ix, cy, r, COL.dim);
+  }else if(rule.kind==="size"){
+    if(rule.val==="big"){
+      drawShapeIcon("circle", ix-6, cy, r*1.25, COL.orange);
+      drawShapeIcon("circle", ix+22, cy+4, r*0.5, "rgba(138,163,196,0.35)");
+    }else{
+      drawShapeIcon("circle", ix-8, cy+4, r*0.5, COL.orange);
+      drawShapeIcon("circle", ix+18, cy, r*1.25, "rgba(138,163,196,0.35)");
+    }
+  }else if(rule.kind==="combo"){
+    drawShapeIcon(rule.comboShape, ix, cy, r, FRUITCOL[rule.comboColor]);
+  }
+  const tx0 = cx-w/2+62;
+  txt(rule.label, tx0 + (w-72)/2, cy,
+      Math.min(19, (w-72)/rule.label.length*1.75), rule.color);
+}
 
 scenes.slash = {
   enter(){
@@ -692,25 +732,26 @@ scenes.slash = {
     this.rule=makeRule(this.level); this.ruleT=0; this.banner=0;
     this.over=false; this.started = !!S.seen.slash; this.result=null;
     this.lastP=null;
-    if(this.started) say(this.rule.say);
   },
   spawn(){
     const lvl=this.level;
     const roll=Math.random();
-    const o={x:rand(W*0.12,W*0.88), y:H+40, r:Math.min(W,H)*0.055+8,
+    const base=Math.min(W,H)*0.055+8;
+    const o={x:rand(W*0.12,W*0.88), y:H+40, r:base,
              vy:-Math.sqrt(2*1500*rand(H*0.5,H*0.8)), vx:0, sliced:false, rot:rand(0,TAU),
-             vr:rand(-2,2), sludge:false, color:"red", shape:"circle", num:ri(1,9)};
+             vr:rand(-2,2), sludge:false, color:"red", shape:"circle", size:"big"};
     o.vx = (W/2-o.x)*rand(0.1,0.5) + rand(-40,40);
-    if(lvl>=2 && roll<0.13){ o.sludge=true; o.r*=1.15; }
+    if(lvl>=2 && roll<0.13){ o.sludge=true; o.r=base*1.15; }
     else{
       const wantMatch = Math.random()<0.55;
-      // try a few times to get desired match state
-      for(let k=0;k<8;k++){
+      for(let k=0;k<10;k++){
         o.color = pick(["red","blue","green","yellow"]);
         o.shape = pick(["circle","square","tri","star"]);
-        o.num = ri(1,9);
+        o.size  = Math.random()<0.5 ? "big" : "small";
         if(ruleMatch(this.rule,o)===wantMatch) break;
       }
+      // size is visually obvious: big ones are clearly bigger
+      o.r = o.size==="big" ? base*1.25 : base*0.68;
     }
     this.objs.push(o);
   },
@@ -784,27 +825,10 @@ scenes.slash = {
       ctx.beginPath(); ctx.arc(-o.r*0.3,-o.r*0.15,4,0,TAU); ctx.arc(o.r*0.3,-o.r*0.15,4,0,TAU); ctx.fill();
       ctx.restore(); return;
     }
-    const c=FRUITCOL[o.color];
-    ctx.fillStyle=c; ctx.strokeStyle="rgba(0,0,0,0.35)"; ctx.lineWidth=3;
-    if(o.shape==="circle"){ ctx.beginPath(); ctx.arc(0,0,o.r,0,TAU); ctx.fill(); ctx.stroke(); }
-    else if(o.shape==="square"){ rrect(-o.r,-o.r,o.r*2,o.r*2,o.r*0.3); ctx.fill(); ctx.stroke(); }
-    else if(o.shape==="tri"){ ctx.beginPath(); ctx.moveTo(0,-o.r*1.1);
-      ctx.lineTo(o.r,o.r*0.8); ctx.lineTo(-o.r,o.r*0.8); ctx.closePath(); ctx.fill(); ctx.stroke(); }
-    else{ // star
-      ctx.beginPath();
-      for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5;
-        const r=i%2===0?o.r*1.15:o.r*0.5;
-        const x=Math.cos(a)*r,y=Math.sin(a)*r;
-        if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
-      ctx.closePath(); ctx.fill(); ctx.stroke();
-    }
+    drawShapeIcon(o.shape, 0, 0, o.r, FRUITCOL[o.color]);
     // shine
     ctx.fillStyle="rgba(255,255,255,0.35)";
     ctx.beginPath(); ctx.arc(-o.r*0.35,-o.r*0.35,o.r*0.22,0,TAU); ctx.fill();
-    if(this.rule.kind==="num"){
-      ctx.rotate(-o.rot);
-      txt(String(o.num),0,2,o.r*1.05,"#0b1424");
-    }
     ctx.restore();
   },
   draw(dt){
@@ -815,19 +839,18 @@ scenes.slash = {
       hintOverlay("slash", this.t, (t)=>{
         const cx=W/2, cy=H*0.42;
         txt("SWIPE TO SLICE!", cx, H*0.18, Math.min(34,W*0.08), COL.text);
-        // rule chip
-        ctx.fillStyle=COL.panel; rrect(cx-140,H*0.24,280,44,12); ctx.fill();
-        ctx.strokeStyle=COL.red; ctx.lineWidth=3; ctx.stroke();
-        txt("MATCH THE RULE", cx, H*0.24+22, 18, COL.red);
-        // fruit + animated swipe line
-        ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(cx,cy+40,34,0,TAU); ctx.fill();
+        // example rule chip: the picture tells you what to slice
+        drawRuleChip({kind:"color", val:"red", label:"SLICE RED", color:COL.red},
+                     cx, H*0.24+22, Math.min(300,W*0.8), 46);
+        // matching fruit + animated swipe line
+        drawShapeIcon("circle", cx, cy+40, 34, COL.red);
         const ph=(t%1.2)/1.2;
         const x1=cx-90+ph*180, y1=cy+90-ph*100;
         ctx.strokeStyle=COL.cyan; ctx.lineWidth=6; ctx.lineCap="round";
         ctx.beginPath(); ctx.moveTo(cx-90,cy+90); ctx.lineTo(x1,y1); ctx.stroke();
         ctx.fillStyle=COL.cyan; ctx.beginPath(); ctx.arc(x1,y1,10,0,TAU); ctx.fill();
         txt("WATCH OUT FOR GRAY SLUDGE!", cx, cy+150, Math.min(18,W*0.045), COL.sludge);
-      }, ()=>{ this.started=true; say(this.rule.say); });
+      }, ()=>{ this.started=true; });
       return;
     }
     if(!this.over){
@@ -839,7 +862,6 @@ scenes.slash = {
         this.ruleT=0;
         this.rule=makeRule(Math.max(2,this.level), this.rule.label);
         this.banner=1.6; sfx.pop();
-        say("New rule! "+this.rule.say);
       }
       if(this.banner>0) this.banner-=dt;
       this.spawnT-=dt*(this.banner>0?0.3:1);
@@ -870,16 +892,15 @@ scenes.slash = {
       ctx.globalAlpha=1;
     }
     updateFx(dt); drawFx();
-    // rule chip
+    // rule chip (picture-first)
     const rw=Math.min(340,W*0.86);
-    ctx.fillStyle=COL.panel; rrect(W/2-rw/2,60,rw,40,12); ctx.fill();
-    ctx.strokeStyle=this.rule.color; ctx.lineWidth=3; ctx.stroke();
-    txt(this.rule.label, W/2, 80, Math.min(19, rw/this.rule.label.length*1.7), this.rule.color);
+    drawRuleChip(this.rule, W/2, 82, rw, 46);
     // score
     txt("SCORE "+this.score, W/2, 118, 18, COL.text);
     if(this.banner>0){
       ctx.globalAlpha=clamp(this.banner,0,1);
-      txt("NEW RULE!", W/2, H*0.36, Math.min(52,W*0.12), COL.yellow, "center","900",true);
+      txt("NEW RULE!", W/2, H*0.30, Math.min(52,W*0.12), COL.yellow, "center","900",true);
+      drawRuleChip(this.rule, W/2, H*0.40, Math.min(320,W*0.82), 56);
       ctx.globalAlpha=1;
     }
     missionTop("SLASH LAB", COL.red, this.timeLeft, this.shields);
@@ -960,12 +981,15 @@ scenes.build = {
   },
   buildPuzzle(){
     const lvl=this.level;
-    const mask = MASKS[Math.min(lvl-1, MASKS.length-1)];
+    // gentler ramp: shapes advance every 2 levels, and the hardest few are capped
+    const idx = Math.min(Math.floor((lvl-1)/2), MASKS.length-1);
+    const mask = MASKS[idx];
     this.cols = Math.max(...mask.map(r=>r.length));
     this.rows = mask.length;
     this.region = maskCells(mask);
     this.regionKeys = new Set(this.region.map(c=>c.x+","+c.y));
-    const minS = lvl<3?3:3, maxS = lvl<3?4:5;
+    // bigger pieces = fewer of them = less search space for a 6-year-old
+    const minS = 4, maxS = 5;
     const raw = carve(this.region, minS, maxS);
     this.pieces = raw.map((cellsArr,i)=>{
       const minX=Math.min(...cellsArr.map(c=>c.x)), minY=Math.min(...cellsArr.map(c=>c.y));
@@ -1170,6 +1194,17 @@ scenes.build = {
     }
     updateFx(dt); drawFx();
     missionTop("BUILD BAY", COL.yellow, null, null);
+    // "too hard?" escape hatch — steps the level DOWN and reshuffles,
+    // so a stuck puzzle never means resetting the whole game
+    if(!this.won){
+      button(8,60,110,38,"NEW SHAPE",()=>{
+        this.level=Math.max(1,this.level-1);
+        S.lv.build=this.level; save();
+        this.hints=CONFIG.hintCount; this.drag=null;
+        this.buildPuzzle(); sfx.pop();
+        floatText("EASIER SHAPE!", W/2, H*0.3, COL.cyan, 24);
+      },{stroke:COL.dim,size:14});
+    }
     // hint button (in the top bar, clear of the board)
     if(!this.won && this.hints>0){
       button(W-134,8,120,38,"HINT ("+this.hints+")",()=>{
@@ -1203,6 +1238,7 @@ scenes.truck = {
     this.items=[]; this.spawnX=W+100;
     this.dist=0; this.crates=0; this.coins=0; this.invuln=0;
     this.crateB=0; this.goldB=0; this.streak=0; this.streakT=0; this.turbo=0;
+    this.slamming=false; this.slamCool=0; this.quota=6+this.level*2; this.quotaDone=false;
     this.started=!!S.seen.truck; this.over=false; this.result=null;
     this.wheelRot=0;
   },
@@ -1218,6 +1254,12 @@ scenes.truck = {
   },
   smashReward(it, base){
     this.crates++;
+    if(!this.quotaDone && this.crates>=this.quota){
+      this.quotaDone=true;
+      this.crateB+=10; sfx.fanfare(); addShake(8);
+      floatText("QUOTA COMPLETE! +10", W/2, H*0.30, COL.lime, 30);
+      for(let i=0;i<3;i++) burst(rand(W*0.2,W*0.8), rand(H*0.2,H*0.5), COL.lime, 16, 340, 0.9);
+    }
     this.streak++; this.streakT=2.5;
     const bonus = Math.min(3, Math.floor(this.streak/3));
     this.crateB += base + bonus;
@@ -1264,15 +1306,21 @@ scenes.truck = {
       this.items.push({k:"ramp", x, y:gY, w:110*s, h:64*s, dead:false, used:false});
       x+=110*s;
     }
-    this.spawnX = x + rand(240,440)*s + Math.max(0, 60-this.level*4)*s;
+    this.spawnX = x + rand(130,250)*s + Math.max(0, 40-this.level*4)*s;
   },
   onDown(){
     if(!this.started||this.over) return;
     this.holding=true;
-    if(this.grounded || this.jumps<2){
+    if(this.grounded){
       this.vy = -Math.min(W,H)*3.4;
-      this.grounded=false; this.jumps++;
+      this.grounded=false; this.jumps=1;
       sfx.jump();
+    }else if(this.jumps===1){
+      // second tap in the air = SLAM: drop fast and smash through anything below
+      this.jumps=2; this.slamming=true;
+      this.vy = Math.min(W,H)*4.2;
+      sfx.smash();
+      floatText("SLAM!", W*0.25, this.groundY()+this.y-90*this.scale(), COL.orange, 26);
     }
   },
   onUp(){ this.holding=false; },
@@ -1307,13 +1355,14 @@ scenes.truck = {
     if(!this.started){
       hintOverlay("truck", this.t, (t)=>{
         txt("TAP TO JUMP!", W/2, H*0.16, Math.min(34,W*0.08), COL.text);
-        txt("TAP AGAIN = DOUBLE JUMP", W/2, H*0.24, Math.min(20,W*0.05), COL.cyan);
+        txt("SMASH CRATES! JUMP ROCKS!", W/2, H*0.24, Math.min(20,W*0.05), COL.cyan);
         const ph=(t%1.4)/1.4;
         const jy = -Math.abs(Math.sin(ph*Math.PI))*90;
         this.drawTruck(W*0.5, H*0.48+jy, s*1.1, ph*10);
-        txt("SMASH CRATES!  JUMP ROCKS!", W/2, H*0.62, Math.min(20,W*0.05), COL.lime);
-        txt("DRONE AHEAD? STAY LOW!", W/2, H*0.69, Math.min(20,W*0.05), COL.red);
-      }, ()=>{ this.started=true; say("Smash crates! Jump rocks! And stay low under drones!"); });
+        txt("TAP IN THE AIR = SLAM!", W/2, H*0.62, Math.min(22,W*0.055), COL.orange);
+        txt("SLAM SMASHES ROCKS!", W/2, H*0.69, Math.min(20,W*0.05), COL.lime);
+        txt("DRONE AHEAD? STAY LOW!", W/2, H*0.75, Math.min(20,W*0.05), COL.red);
+      }, ()=>{ this.started=true; });
       missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
       return;
     }
@@ -1325,7 +1374,31 @@ scenes.truck = {
       const g = (this.holding && this.vy<0)? 3200*0.55 : 3200;
       this.vy += g*s*dt*2.2;
       this.y += this.vy*dt;
-      if(this.y>0){ this.y=0; if(!this.grounded){ sfx.land(); burst(W*0.25, gY, "#4a5f85", 6, 160, 0.4);} this.grounded=true; this.jumps=0; }
+      if(this.y>0){
+        this.y=0;
+        if(!this.grounded){
+          if(this.slamming){
+            // shockwave: clears ground hazards just ahead
+            sfx.smash(); addShake(10);
+            burst(W*0.25, gY, COL.orange, 22, 420, 0.7);
+            const reach=170*s;
+            for(const it of this.items){
+              if(it.dead || it.k==="coin" || it.k==="drone") continue;
+              if(Math.abs((it.x+it.w/2)-W*0.25) < reach && it.y+it.h > gY-70*s){
+                if(it.k==="rock" || it.k==="crate" || it.k==="gold"){
+                  it.dead=true;
+                  if(it.k==="gold"){ this.goldB+=5; this.streak++; this.streakT=2.5;
+                    floatText("GOLD! +5", it.x+it.w/2, it.y-12, COL.yellow, 26); }
+                  else this.smashReward(it, it.k==="rock"?3:2);
+                }
+              }
+            }
+          }else{
+            sfx.land(); burst(W*0.25, gY, "#4a5f85", 6, 160, 0.4);
+          }
+        }
+        this.grounded=true; this.jumps=0; this.slamming=false;
+      }
       const sp=this.effSpeed();
       this.dist += sp*dt;
       this.wheelRot += sp*dt/(26*s);
@@ -1361,8 +1434,8 @@ scenes.truck = {
           burst(it.x+it.w/2, it.y+it.h/2, COL.yellow, 22, 360, 0.8);
           floatText("GOLD! +5", it.x+it.w/2, it.y-12, COL.yellow, 28);
         }else if(it.k==="rock"){
-          if(this.turbo>0){
-            it.dead=true; this.smashReward(it, 2);
+          if(this.turbo>0 || this.slamming){
+            it.dead=true; this.smashReward(it, this.slamming?3:2);
           }else if(this.invuln<=0){
             it.dead=true;
             this.shields--; this.invuln=1.2; this.streak=0;
@@ -1387,7 +1460,6 @@ scenes.truck = {
           this.turbo=2.4;
           sfx.fanfare(); addShake(5);
           floatText("TURBO!!!", tx, ty-th-70*s, COL.cyan, 34);
-          say("Turbo!");
         }else if(it.k==="ramp" && !it.used && this.grounded){
           it.used=true;
           this.vy=-Math.min(W,H)*3.9; this.grounded=false; this.jumps=2;
@@ -1473,18 +1545,36 @@ scenes.truck = {
     // truck
     const flick = this.invuln>0 && Math.floor(this.t*14)%2===0;
     if(!flick){
-      if(this.turbo>0){ ctx.save(); ctx.shadowColor=COL.cyan; ctx.shadowBlur=26; }
-      this.drawTruck(W*0.25, this.groundY()+this.y, sNow, this.wheelRot);
-      if(this.turbo>0) ctx.restore();
+      const glow = this.turbo>0 || this.slamming;
+      if(glow){ ctx.save(); ctx.shadowColor=this.slamming?COL.orange:COL.cyan; ctx.shadowBlur=26; }
+      if(this.slamming){
+        ctx.save();
+        ctx.translate(W*0.25, this.groundY()+this.y);
+        ctx.rotate(0.22);
+        this.drawTruck(0, 0, sNow, this.wheelRot);
+        ctx.restore();
+      }else{
+        this.drawTruck(W*0.25, this.groundY()+this.y, sNow, this.wheelRot);
+      }
+      if(glow) ctx.restore();
     }
     updateFx(dt); drawFx();
     // HUD
-    txt("SMASHED: "+this.crates + (this.streak>=2? "  x"+this.streak : ""), W*0.25, 74, 17,
+    // quota bar — the thing to actively chase
+    const qw=Math.min(190,W*0.42), qx=W*0.25-qw/2;
+    ctx.fillStyle=COL.panel; rrect(qx,64,qw,24,12); ctx.fill();
+    ctx.strokeStyle=this.quotaDone?COL.lime:COL.line; ctx.lineWidth=2; ctx.stroke();
+    ctx.fillStyle=this.quotaDone?COL.lime:COL.yellow;
+    rrect(qx+3,67,Math.max(4,(qw-6)*clamp(this.crates/this.quota,0,1)),18,9); ctx.fill();
+    txt(this.quotaDone? "QUOTA DONE!" : "SMASH "+this.crates+" / "+this.quota,
+        W*0.25, 76, 14, COL.bg);
+    if(this.streak>=2) txt("STREAK x"+this.streak, W*0.25, 100, 16,
         this.streak>=5? COL.orange : COL.yellow);
-    if(this.turbo>0) txt("TURBO!", W*0.25, 96, 17, COL.cyan);
+    if(this.turbo>0) txt("TURBO!", W*0.25, 122, 17, COL.cyan);
     missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
     if(this.over && this.result){
-      drawResult("RUN DONE!", [this.result.msg, "SMASHED: "+this.crates+"   BOLTS GRABBED: "+this.coins], this.result.b, "truck");
+      drawResult("RUN DONE!", [this.quotaDone? "QUOTA COMPLETE!" : this.result.msg,
+        "SMASHED: "+this.crates+" / "+this.quota+"   BOLTS: "+this.coins], this.result.b, "truck");
     }
   },
   drawTruck(x, groundY, s, wheelRot){
@@ -1524,9 +1614,164 @@ scenes.truck = {
 /* =====================================================================
    VICTORY — Titan rebuilt
 =======================================================================*/
+/* =====================================================================
+   REPAIR BAY — the fixing is now a game, not a purchase.
+   Bolts physically fly from the counter into the part; the child taps
+   each glowing bolt hole to fasten it. This is the causal link that was
+   missing: bolts -> fastening -> the part is on.
+=======================================================================*/
+scenes.repair = {
+  enter(){
+    this.t=0; this.done=false; this.exitT=0;
+    this.idx = S.parts;
+    this.cost = PARTS[this.idx] ? PARTS[this.idx].cost : 0;
+    this.name = PARTS[this.idx] ? PARTS[this.idx].name : "";
+    // 4-6 bolts to fasten, more for later (bigger) parts
+    const n = clamp(4 + Math.floor(this.idx/3), 4, 6);
+    this.bolts=[];
+    for(let i=0;i<n;i++){
+      const a = -Math.PI/2 + i*TAU/n;
+      this.bolts.push({a, r:0, done:false, spin:0, pop:0});
+    }
+    this.flyers=[];   // bolts flying in from the counter
+    this.spent=false;
+    this.charge=0;
+  },
+  layout(){
+    const cx=W/2, cy=H*0.46;
+    const rad=Math.min(W*0.30, H*0.20);
+    for(const b of this.bolts){
+      b.x = cx + Math.cos(b.a)*rad;
+      b.y = cy + Math.sin(b.a)*rad;
+    }
+    return {cx, cy, rad};
+  },
+  onDown(p){
+    if(this.done) return;
+    const L=this.layout();
+    const hitR = Math.max(38, Math.min(W,H)*0.075);
+    for(const b of this.bolts){
+      if(b.done) continue;
+      if(Math.hypot(p.x-b.x, p.y-b.y) < hitR){
+        b.done=true; b.pop=1;
+        sfx.place(); tone(300+this.bolts.filter(x=>x.done).length*90, 0.1, "square", 0.14, 120);
+        burst(b.x, b.y, COL.orange, 12, 240, 0.5);
+        addShake(3);
+        // a bolt flies from the counter into this hole
+        this.flyers.push({x:W-140, y:29, tx:b.x, ty:b.y, t:0});
+        const left=this.bolts.filter(x=>!x.done).length;
+        if(left===0) this.finish();
+        return;
+      }
+    }
+  },
+  finish(){
+    this.done=true; this.exitT=0;
+    if(!this.spent){
+      this.spent=true;
+      S.bolts -= this.cost;
+      S.parts++;
+      save();
+    }
+    sfx.install(); addShake(9);
+    burst(W/2, H*0.46, PAINTS[S.paint].glow, 40, 420, 1);
+    floatText(this.name+" ONLINE!", W/2, H*0.30, COL.lime, 30);
+  },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    const L=this.layout();
+    const P=PAINTS[S.paint];
+
+    missionTop("REPAIR BAY", COL.lime, null, null);
+
+    // counter of bolts being spent
+    const remaining = this.spent? S.bolts : S.bolts - this.cost;
+    ctx.fillStyle=COL.panel; rrect(W-190,10,180,38,19); ctx.fill();
+    ctx.strokeStyle=COL.line; ctx.lineWidth=2; ctx.stroke();
+    drawBoltIcon(W-166,29,11);
+    txt((this.spent? S.bolts : S.bolts)+" − "+this.cost, W-20, 29, 18, COL.orange, "right");
+
+    const doneN = this.bolts.filter(b=>b.done).length;
+    txt(this.done? "REPAIRED!" : "TAP THE GLOWING BOLTS",
+        W/2, H*0.16, Math.min(28,W*0.065), this.done? COL.lime : COL.text);
+    txt(this.name, W/2, H*0.16+Math.min(34,W*0.08), Math.min(20,W*0.05), COL.cyan);
+
+    // the part being repaired, drawn large in the middle
+    ctx.save();
+    ctx.translate(L.cx, L.cy);
+    const ps = Math.min(W*0.5, H*0.30)/120;
+    ctx.scale(ps, ps);
+    ctx.fillStyle= this.done? P.main : "rgba(53,224,255,0.10)";
+    ctx.strokeStyle= this.done? P.dark : P.main;
+    ctx.lineWidth=4/ps;
+    if(!this.done){ ctx.setLineDash([10/ps,7/ps]); }
+    rrect(-70,-46,140,92,14); ctx.fill(); ctx.stroke();
+    ctx.setLineDash([]);
+    if(this.done){
+      ctx.fillStyle="rgba(255,255,255,0.2)";
+      rrect(-60,-38,120,26,10); ctx.fill();
+      ctx.save(); ctx.shadowColor=P.glow; ctx.shadowBlur=20;
+      ctx.fillStyle=P.glow; ctx.beginPath(); ctx.arc(0,8,16,0,TAU); ctx.fill(); ctx.restore();
+    }
+    ctx.restore();
+
+    // progress pips
+    txt(doneN+" / "+this.bolts.length+" BOLTS", L.cx, L.cy+Math.min(W*0.5,H*0.30)*0.42+34,
+        16, COL.dim);
+
+    // bolt holes
+    for(const b of this.bolts){
+      if(b.pop>0) b.pop-=dt*3;
+      const r = Math.max(15, Math.min(W,H)*0.032);
+      if(b.done){
+        b.spin += dt*6;
+        ctx.save(); ctx.translate(b.x,b.y); ctx.rotate(b.spin*0.4);
+        drawBoltIcon(0,0, r*(1+Math.max(0,b.pop)*0.4), COL.orange);
+        ctx.restore();
+      }else{
+        const pulse=0.55+0.45*Math.sin(this.t*5 + b.a*2);
+        ctx.save();
+        ctx.shadowColor=COL.cyan; ctx.shadowBlur=20*pulse;
+        ctx.strokeStyle="rgba(53,224,255,"+(0.5+0.4*pulse).toFixed(2)+")";
+        ctx.lineWidth=4;
+        ctx.beginPath(); ctx.arc(b.x,b.y,r,0,TAU); ctx.stroke();
+        ctx.restore();
+        ctx.fillStyle="rgba(11,20,36,0.7)";
+        ctx.beginPath(); ctx.arc(b.x,b.y,r*0.8,0,TAU); ctx.fill();
+        // a little "tap here" dot
+        ctx.fillStyle="rgba(53,224,255,"+(0.35+0.35*pulse).toFixed(2)+")";
+        ctx.beginPath(); ctx.arc(b.x,b.y,r*0.28,0,TAU); ctx.fill();
+      }
+    }
+
+    // flying bolts: the visible causal link between currency and repair
+    for(const f of this.flyers){
+      f.t+=dt*2.2;
+      const e=ease(clamp(f.t,0,1));
+      const fx=f.x+(f.tx-f.x)*e, fy=f.y+(f.ty-f.y)*e - Math.sin(e*Math.PI)*70;
+      drawBoltIcon(fx,fy, 11, COL.orange);
+    }
+    this.flyers=this.flyers.filter(f=>f.t<1);
+
+    updateFx(dt); drawFx();
+
+    if(this.done){
+      this.exitT+=dt;
+      if(this.exitT>1.1){
+        if(S.parts>=PARTS.length) go("victory"); else go("home");
+        return;
+      }
+    }else{
+      // back out without spending
+      button(W/2-70, H*0.88, 140, 46, "LATER", ()=>go("home"), {stroke:COL.line, size:18});
+    }
+  }
+};
+
 scenes.victory = {
   enter(){ this.t=0; if(!S.rebuilt){ S.rebuilt=true; save(); } sfx.fanfare(); this.fw=0;
-    say("Titan rebuilt! Thank you, hero! Now charge my energy to power me up!"); },
+},
   draw(dt){
     this.t+=dt;
     drawBg(dt);
@@ -1543,7 +1788,7 @@ scenes.victory = {
     txt("TITAN", W/2, H*0.12, ts, COL.cyan, "center","900",true);
     txt("REBUILT!", W/2, H*0.12+ts*0.95, ts, COL.lime, "center","900",true);
     if(this.t>1.5){
-      txt("NEW: PAINT SHOP + ENERGY MODE", W/2, H*0.80, Math.min(18,W*0.045), COL.yellow);
+      txt("NEW: PAINT SHOP + RANK UPS", W/2, H*0.80, Math.min(18,W*0.045), COL.yellow);
       const bw=Math.min(280,W*0.7);
       button(W/2-bw/2, H*0.86, bw, 62, "TO THE GARAGE", ()=>go("home"),
         {color:"#173a1f", stroke:COL.lime, glow:COL.lime});
@@ -1572,9 +1817,8 @@ scenes.paint = {
       const open = i<unlocked;
       const x=W/2-total/2+i*(bw+12), y=H*0.72;
       button(x,y,bw,bh,null,()=>{
-        if(!open){ sfx.wrong(); floatText("REACH RANK "+i+"!", W/2, H*0.55, COL.red, 24); return; }
+        if(!open){ sfx.wrong(); floatText("REACH RANK "+i+" — "+rankName(i)+"!", W/2, H*0.55, COL.red, 24); return; }
         S.paint=i; save(); sfx.install();
-        say(p.name.toLowerCase()+" paint!");
         burst(W/2,H*0.4,p.glow,24,360);
       },
         {color: S.paint===i? "#22344f": COL.panel,
@@ -1608,8 +1852,6 @@ scenes.parent = {
     txt("Missions earn bolts. Bolts rebuild Titan.", W/2, y, 17, COL.text); y+=26;
     txt("Rounds last "+CONFIG.roundSeconds+"s. No internet needed.", W/2, y, 15, COL.dim); y+=40;
     button(px, y, pw, 54, S.snd? "SOUND EFFECTS: ON":"SOUND EFFECTS: OFF", ()=>{S.snd=!S.snd; save();}); y+=64;
-    button(px, y, pw, 54, S.voice? "TITAN VOICE: ON":"TITAN VOICE: OFF", ()=>{S.voice=!S.voice; save();
-      if(S.voice) say("Titan voice is on!"); }); y+=64;
     button(px, y, pw, 56,
       this.confirm? "TAP AGAIN TO ERASE ALL PROGRESS":"RESET PROGRESS",
       ()=>{
@@ -1627,15 +1869,6 @@ canvas.addEventListener("pointerdown", e=>{
   e.preventDefault();
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
   unlockAudio();
-  if(!speechReady){
-    speechReady=true;
-    try{
-      if(window.speechSynthesis && window.SpeechSynthesisUtterance){
-        const u=new SpeechSynthesisUtterance(" "); u.volume=0;
-        speechSynthesis.speak(u);
-      }
-    }catch(err){}
-  }
   const p=evPoint(e);
   if(hitButtons(p)) return;
   if(scene && scene.onDown) scene.onDown(p);
