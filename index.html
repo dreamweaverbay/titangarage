@@ -64,7 +64,7 @@ const COL = {
 const SAVE_KEY = "titan-garage-v1";
 function defaultSave(){
   return {v:1, bolts:0, parts:0, lv:{slash:1,build:1,truck:1},
-          snd:true, paint:0, rebuilt:false, power:0, powerLv:0,
+          snd:true, voice:true, paint:0, rebuilt:false, power:0, powerLv:0,
           seen:{}, intro:false};
 }
 let S = defaultSave();
@@ -139,6 +139,19 @@ const sfx = {
   fanfare(){ [392,523,659,784,1046,1318].forEach((f,i)=>setTimeout(()=>tone(f,0.2,"square",0.13),i*130)); }
 };
 
+/* ---------------- Titan's voice (Web Speech API, no files) ---------------- */
+let speechReady=false;
+function say(text){
+  if(!S.voice) return;
+  try{
+    if(!window.speechSynthesis || !window.SpeechSynthesisUtterance) return;
+    speechSynthesis.cancel();
+    const u = new SpeechSynthesisUtterance(text);
+    u.rate=1.0; u.pitch=0.6; u.volume=1;
+    speechSynthesis.speak(u);
+  }catch(e){}
+}
+
 /* ---------------- small helpers ---------------- */
 const TAU = Math.PI*2;
 function clamp(v,a,b){ return v<a?a:(v>b?b:v); }
@@ -160,6 +173,15 @@ function txt(str,x,y,size,color,align,weight,skew){
   if(skew){ ctx.translate(x,y); ctx.transform(1,0,-0.12,1,0,0); ctx.fillText(str,0,0); }
   else ctx.fillText(str,x,y);
   ctx.restore();
+}
+function drawStar(x,y,r,color){
+  ctx.save(); ctx.translate(x,y); ctx.fillStyle=color||COL.yellow;
+  ctx.beginPath();
+  for(let i=0;i<10;i++){ const a=-Math.PI/2+i*Math.PI/5;
+    const rr=i%2===0?r:r*0.45;
+    const px=Math.cos(a)*rr, py=Math.sin(a)*rr;
+    if(i===0)ctx.moveTo(px,py); else ctx.lineTo(px,py); }
+  ctx.closePath(); ctx.fill(); ctx.restore();
 }
 function drawBoltIcon(x,y,r,color){
   ctx.save(); ctx.translate(x,y);
@@ -238,7 +260,7 @@ function hitButtons(p){
 let scene=null, scenes={};
 function go(name){
   scene = scenes[name];
-  buttons=[]; floaters=[]; sparks=[];
+  buttons=[]; floaters=[]; sparks=[]; shake=0; shakeT=0;
   if(scene.enter) scene.enter();
 }
 
@@ -361,7 +383,8 @@ scenes.intro = {
     }
     const bw=Math.min(280,W*0.7);
     button(cx-bw/2, H*0.88, bw, 64, this.page<2?"NEXT":"LET'S GO!", ()=>{
-      if(this.page<2){ this.page++; }
+      if(this.page===0){ this.page=1; say("Play missions to earn bolts!"); }
+      else if(this.page===1){ this.page=2; say("Use the bolts to rebuild me! I'm counting on you, hero!"); }
       else { S.intro=true; save(); go("home"); }
     }, {color:this.page<2?COL.panel2:"#173a1f", stroke:this.page<2?COL.line:COL.lime, glow:this.page<2?null:COL.lime});
   }
@@ -371,8 +394,18 @@ scenes.intro = {
    HOME — the garage
 =======================================================================*/
 scenes.home = {
-  t:0, installing:-1, installT:0,
-  enter(){ this.t=0; this.installing=-1; },
+  t:0, flash:0, vt:0, needSay:true, titanPos:null,
+  enter(){ this.t=0; this.flash=0; this.vt=0; this.needSay=true; },
+  bubbleLine(){
+    if(S.parts<PARTS.length){
+      const cost=PARTS[S.parts].cost, name=PARTS[S.parts].name;
+      if(S.bolts>=cost) return {text:"INSTALL MY "+name+"!", speak:"Install my "+name.toLowerCase()+"!"};
+      return {text:"GET "+cost+" BOLTS FOR MY "+name+"!",
+              speak:"I need "+cost+" bolts for my "+name.toLowerCase()+". Play missions!"};
+    }
+    if(S.power>=100) return {text:"PRESS POWER UP!", speak:"My energy is full! Press power up!"};
+    return {text:"PLAY MISSIONS TO CHARGE ME!", speak:"Play missions to charge my energy!"};
+  },
   draw(dt){
     this.t+=dt;
     drawBg(dt);
@@ -398,73 +431,112 @@ scenes.home = {
     let titanCX, titanFootY, titanS, missionArea;
     if(land){
       titanCX = W*0.30; titanFootY = H*0.88;
-      titanS = Math.min(W*0.30, H*0.78)/300;
+      titanS = Math.min(W*0.30, H*0.72)/300;
       missionArea = {x:W*0.56, y:barH+14, w:W*0.42, h:H-barH-28, col:true};
     }else{
-      titanCX = W*0.5; titanFootY = H*0.56;
-      titanS = Math.min(W*0.62, H*0.42)/300;
-      missionArea = {x:W*0.06, y:H*0.60, w:W*0.88, h:H*0.38, col:false};
+      titanCX = W*0.5; titanFootY = H*0.50;
+      titanS = Math.min(W*0.62, H*0.36)/300;
+      missionArea = {x:W*0.06, y:H*0.64, w:W*0.88, h:H*0.34, col:false};
+    }
+    this.titanPos = {cx:titanCX, footY:titanFootY, s:titanS};
+
+    drawTitan(titanCX, titanFootY, titanS, S.parts, this.t, S.parts<PARTS.length);
+
+    // install flash glow over titan
+    if(this.flash>0){
+      this.flash-=dt;
+      ctx.globalAlpha=clamp(this.flash,0,0.6);
+      ctx.fillStyle=PAINTS[S.paint].glow;
+      ctx.beginPath(); ctx.arc(titanCX, titanFootY-150*titanS, 180*titanS*(1.6-this.flash),0,TAU); ctx.fill();
+      ctx.globalAlpha=1;
+    }
+    // victory countdown after final part
+    if(this.vt>0){ this.vt-=dt; if(this.vt<=0){ go("victory"); return; } }
+
+    // rank stars above head (post-rebuild)
+    if(S.rebuilt && S.powerLv>0){
+      const n=Math.min(S.powerLv,5);
+      for(let i=0;i<n;i++){
+        const a=Math.PI*(0.5 + (i-(n-1)/2)*0.28);
+        const sx=titanCX+Math.cos(a)*120*titanS;
+        const sy=titanFootY-300*titanS - Math.sin(a)*30*titanS + 10*titanS;
+        drawStar(sx, sy, 11, COL.yellow);
+      }
+      if(S.powerLv>5) txt("x"+S.powerLv, titanCX+150*titanS, titanFootY-300*titanS, 16, COL.yellow);
     }
 
-    // install animation
-    let showGhost = S.parts<PARTS.length;
-    if(this.installing>=0){
-      this.installT+=dt;
-      if(this.installT>0.5 && this.installing===S.parts){
-        S.parts++; save(); sfx.install(); addShake(8);
-        burst(titanCX, titanFootY-150*titanS, PAINTS[S.paint].glow, 26, 360);
-        if(S.parts>=PARTS.length){ setTimeout(()=>go("victory"), 700); }
-      }
-      if(this.installT>0.8){ this.installing=-1; }
-    }
-    drawTitan(titanCX, titanFootY, titanS, S.parts, this.t, showGhost);
+    // ----- Titan speech bubble
+    const line=this.bubbleLine();
+    if(this.needSay){ this.needSay=false; say(line.speak); }
+    const bubW=Math.min(W*0.86, 380), bubH=42;
+    const headY=titanFootY-292*titanS;
+    const bubX=W/2-bubW/2;
+    const bubY=clamp(headY-64, barH+8, H*0.4);
+    ctx.fillStyle="#e9f2ff"; rrect(bubX,bubY,bubW,bubH,14); ctx.fill();
+    // tail
+    ctx.beginPath();
+    ctx.moveTo(clamp(titanCX-10,bubX+20,bubX+bubW-40), bubY+bubH);
+    ctx.lineTo(clamp(titanCX+10,bubX+40,bubX+bubW-20), bubY+bubH);
+    ctx.lineTo(clamp(titanCX,bubX+30,bubX+bubW-30), bubY+bubH+14);
+    ctx.closePath(); ctx.fill();
+    txt(line.text, W/2, bubY+bubH/2, Math.min(18, bubW/line.text.length*1.85), "#12233d");
 
     // progress label under titan
     if(S.parts<PARTS.length){
-      txt("PARTS: "+S.parts+" / "+PARTS.length, titanCX, titanFootY+22, 18, COL.dim);
-    }else{
-      txt("POWER LV "+S.powerLv, titanCX, titanFootY+22, 20, COL.lime);
+      txt("PARTS: "+S.parts+" / "+PARTS.length, titanCX, titanFootY+18, 16, COL.dim);
+    }else if(S.powerLv>0){
+      txt("TITAN RANK "+S.powerLv, titanCX, titanFootY+18, 17, COL.yellow);
     }
 
-    // ----- install / charge button near titan
+    // ----- one action row near titan
+    const bw = Math.min(280, W*0.72);
+    const bx = land? titanCX-bw/2 : W/2-bw/2;
+    const by = land? titanFootY+30 : titanFootY+32;
     if(S.parts<PARTS.length){
-      const label = PARTS[S.parts].name;
-      const bw = Math.min(250, W*0.6);
-      const bx = land? titanCX-bw/2 : W/2-bw/2;
-      const by = land? H*0.06+barH : titanFootY+38;
-      // part name chip
-      ctx.fillStyle=COL.panel; rrect(bx,by,bw,30,10); ctx.fill();
-      txt("NEXT: "+label, bx+bw/2, by+15, 15, COL.cyan);
+      const name = PARTS[S.parts].name;
       if(canBuy){
-        button(bx, by+36, bw, 56, "INSTALL!  "+cost, ()=>{
-          if(this.installing>=0) return;
-          S.bolts-=cost; save();
-          this.installing=S.parts; this.installT=0;
-        }, {color:"#173a1f", stroke:COL.lime, glow:COL.lime, size:24});
-        drawBoltIcon(bx+bw/2+62+String(cost).length*7, by+36+28, 10);
+        const label="INSTALL "+name+" · "+cost;
+        button(bx, by, bw, 54, label, ()=>{
+          if(S.parts>=PARTS.length) return;
+          S.bolts-=cost; S.parts++; save();
+          sfx.install(); addShake(7);
+          this.flash=0.6;
+          const tp=this.titanPos;
+          burst(tp.cx, tp.footY-150*tp.s, PAINTS[S.paint].glow, 30, 380);
+          floatText("CLANK!", tp.cx, tp.footY-220*tp.s, COL.text, 26);
+          say(name.toLowerCase()+" online!");
+          this.needSay=false;
+          if(S.parts>=PARTS.length){ this.vt=1.5; }
+        }, {color:"#173a1f", stroke:COL.lime, glow:COL.lime,
+            size:Math.min(21, bw/label.length*1.85)});
       }else{
-        ctx.fillStyle=COL.panel; rrect(bx,by+36,bw,44,14); ctx.fill();
+        ctx.fillStyle=COL.panel; rrect(bx,by,bw,46,14); ctx.fill();
         ctx.strokeStyle=COL.line; ctx.lineWidth=2; ctx.stroke();
-        txt("NEED "+cost+" ", bx+bw/2-8, by+58, 18, COL.dim);
-        drawBoltIcon(bx+bw/2+34, by+58, 9, COL.dim);
+        const need="COLLECT "+cost+" BOLTS";
+        txt(need, bx+bw/2-10, by+23, Math.min(18, bw/need.length*1.8), COL.dim);
+        drawBoltIcon(bx+bw-30, by+23, 9, COL.dim);
       }
     }else{
-      // rebuilt: charge meter + paint shop
-      const bw = Math.min(250, W*0.6);
-      const bx = land? titanCX-bw/2 : W/2-bw/2;
-      const by = land? H*0.06+barH : titanFootY+38;
+      // energy meter + one action button
       ctx.fillStyle=COL.panel; rrect(bx,by,bw,20,10); ctx.fill();
-      ctx.fillStyle=COL.lime;
-      rrect(bx+3,by+3,(bw-6)*clamp(S.power/100,0,1),14,7); ctx.fill();
-      txt("ENERGY "+S.power+" / 100", bx+bw/2, by+10, 12, COL.text);
+      ctx.strokeStyle=COL.line; ctx.lineWidth=2; ctx.stroke();
+      ctx.fillStyle= S.power>=100? COL.yellow : COL.lime;
+      rrect(bx+3,by+3,Math.max(6,(bw-6)*clamp(S.power/100,0,1)),14,7); ctx.fill();
+      txt("ENERGY "+S.power+" / 100", bx+bw/2, by+10, 12, COL.bg);
       if(S.power>=100){
         button(bx,by+26,bw,52,"POWER UP!",()=>{
           S.power-=100; S.powerLv++; save(); sfx.fanfare();
-          burst(titanCX, titanFootY-180*titanS, COL.lime, 40, 420, 1);
-          addShake(10);
+          const tp=this.titanPos;
+          burst(tp.cx, tp.footY-180*tp.s, COL.lime, 40, 420, 1);
+          burst(tp.cx, tp.footY-260*tp.s, COL.yellow, 24, 380, 1);
+          addShake(9);
+          say("Maximum power! Titan rank "+S.powerLv+"!");
+          if(S.powerLv<PAINTS.length)
+            floatText("NEW PAINT UNLOCKED!", W/2, H*0.28, COL.yellow, 26);
+          this.needSay=false;
         },{color:"#173a1f",stroke:COL.lime,glow:COL.lime});
       }else{
-        button(bx,by+26,bw,44,"PAINT SHOP",()=>go("paint"),{stroke:COL.purple});
+        button(bx,by+26,bw,46,"PAINT SHOP",()=>go("paint"),{stroke:COL.purple});
       }
     }
 
@@ -492,15 +564,18 @@ scenes.home = {
     ];
     for(let i=0;i<3;i++){
       const d=defs[i];
-      let bx,by,bw,bh;
-      if(M.col){ bh=(M.h-28)/3; bw=M.w; bx=M.x; by=M.y+i*(bh+14); }
-      else{ bw=(M.w-24)/3; bh=M.h-10; bx=M.x+i*(bw+12); by=M.y; }
-      button(bx,by,bw,bh,null,()=>go(d.key),{color:COL.panel,stroke:d.color,r:20});
-      const cxb=bx+bw/2;
-      d.icon(cxb, by+bh*0.34, Math.min(bw,bh)/70);
-      txt(d.name, cxb, by+bh*0.62, Math.min(22,bw*0.13), COL.text);
-      txt(d.sub+"  LV "+S.lv[d.key], cxb, by+bh*0.80, Math.min(15,bw*0.09), d.color);
+      let bx2,by2,bw2,bh2;
+      if(M.col){ bh2=(M.h-28)/3; bw2=M.w; bx2=M.x; by2=M.y+i*(bh2+14); }
+      else{ bw2=(M.w-24)/3; bh2=M.h-10; bx2=M.x+i*(bw2+12); by2=M.y; }
+      button(bx2,by2,bw2,bh2,null,()=>go(d.key),{color:COL.panel,stroke:d.color,r:20});
+      const cxb=bx2+bw2/2;
+      d.icon(cxb, by2+bh2*0.34, Math.min(bw2,bh2)/70);
+      txt(d.name, cxb, by2+bh2*0.62, Math.min(22,bw2*0.13), COL.text);
+      txt(d.sub+"  LV "+S.lv[d.key], cxb, by2+bh2*0.80, Math.min(15,bw2*0.09), d.color);
     }
+
+    // effects (this was the shake bug: home never ran the decay/draw pass)
+    updateFx(dt); drawFx();
   }
 };
 
@@ -517,6 +592,7 @@ function drawResult(title, lines, bolts, againKey){
   for(const l of lines){ txt(l, W/2, y, 20, COL.text); y+=30; }
   drawBoltIcon(W/2-52, y+8, 14);
   txt("+"+bolts, W/2+6, y+8, 30, COL.orange, "left");
+  if(S.rebuilt) txt("TITAN ENERGY CHARGED!", W/2, y+46, 16, COL.lime);
   const bw=(pw-60)/2;
   button(px+20, py+ph-76, bw, 56, "AGAIN", ()=>go(againKey), {stroke:COL.lime});
   button(px+40+bw, py+ph-76, bw, 56, "GARAGE", ()=>go("home"), {stroke:COL.cyan});
@@ -524,7 +600,7 @@ function drawResult(title, lines, bolts, againKey){
 function awardBolts(n){
   n = clamp(n, 4, CONFIG.boltCap);
   S.bolts += n;
-  if(S.rebuilt){ S.power = clamp(S.power + Math.round(n/2), 0, 100); }
+  if(S.rebuilt){ S.power = clamp(S.power + n, 0, 100); }
   save();
   return n;
 }
@@ -566,34 +642,36 @@ function hintOverlay(key, t, drawDemo, startCb){
 /* =====================================================================
    SLASH LAB
 =======================================================================*/
-function makeRule(level){
+function makeRule(level, notLabel){
   const colorRules = [
-    {kind:"color", val:"red",    label:"SLICE ONLY RED",    color:COL.red},
-    {kind:"color", val:"blue",   label:"SLICE ONLY BLUE",   color:COL.cyan},
-    {kind:"color", val:"green",  label:"SLICE ONLY GREEN",  color:COL.lime},
-    {kind:"color", val:"yellow", label:"SLICE ONLY YELLOW", color:COL.yellow}
+    {kind:"color", val:"red",    label:"SLICE ONLY RED",    say:"Slice only red!",    color:COL.red},
+    {kind:"color", val:"blue",   label:"SLICE ONLY BLUE",   say:"Slice only blue!",   color:COL.cyan},
+    {kind:"color", val:"green",  label:"SLICE ONLY GREEN",  say:"Slice only green!",  color:COL.lime},
+    {kind:"color", val:"yellow", label:"SLICE ONLY YELLOW", say:"Slice only yellow!", color:COL.yellow}
   ];
   const shapeRules = [
-    {kind:"shape", val:"circle", label:"SLICE ONLY CIRCLES",   color:COL.text},
-    {kind:"shape", val:"square", label:"SLICE ONLY SQUARES",   color:COL.text},
-    {kind:"shape", val:"tri",    label:"SLICE ONLY TRIANGLES", color:COL.text},
-    {kind:"shape", val:"star",   label:"SLICE ONLY STARS",     color:COL.text}
+    {kind:"shape", val:"circle", label:"SLICE ONLY CIRCLES",   say:"Slice only circles!",   color:COL.text},
+    {kind:"shape", val:"square", label:"SLICE ONLY SQUARES",   say:"Slice only squares!",   color:COL.text},
+    {kind:"shape", val:"tri",    label:"SLICE ONLY TRIANGLES", say:"Slice only triangles!", color:COL.text},
+    {kind:"shape", val:"star",   label:"SLICE ONLY STARS",     say:"Slice only stars!",     color:COL.text}
   ];
   const numRules = [
-    {kind:"num", test:n=>n>=6, label:"SLICE BIG NUMBERS  6·7·8·9", color:COL.orange},
-    {kind:"num", test:n=>n<=4, label:"SLICE SMALL NUMBERS  1·2·3·4", color:COL.orange}
+    {kind:"num", test:n=>n>=6, label:"SLICE BIG NUMBERS  6·7·8·9", say:"Slice the big numbers! Six and up!", color:COL.orange},
+    {kind:"num", test:n=>n<=4, label:"SLICE SMALL NUMBERS  1·2·3·4", say:"Slice the small numbers! Four and under!", color:COL.orange}
   ];
   const evenRules = [
-    {kind:"num", test:n=>n%2===0, label:"SLICE EVEN  2·4·6·8", color:COL.purple},
-    {kind:"num", test:n=>n%2===1, label:"SLICE ODD  1·3·5·7·9", color:COL.purple}
+    {kind:"num", test:n=>n%2===0, label:"SLICE EVEN  2·4·6·8", say:"Slice the even numbers!", color:COL.purple},
+    {kind:"num", test:n=>n%2===1, label:"SLICE ODD  1·3·5·7·9", say:"Slice the odd numbers!", color:COL.purple}
   ];
   let pool=[];
-  if(level<2) return {kind:"all", label:"SLICE EVERYTHING!", color:COL.lime};
+  if(level<2) return {kind:"all", label:"SLICE EVERYTHING!", say:"Slice everything!", color:COL.lime};
   pool = pool.concat(colorRules);
   if(level>=4) pool = pool.concat(shapeRules);
   if(level>=6) pool = pool.concat(numRules);
   if(level>=9) pool = pool.concat(evenRules);
-  return pick(pool);
+  let r = pick(pool);
+  for(let i=0; i<12 && notLabel && r.label===notLabel; i++) r = pick(pool);
+  return r;
 }
 function ruleMatch(rule,o){
   if(o.sludge) return false;
@@ -614,6 +692,7 @@ scenes.slash = {
     this.rule=makeRule(this.level); this.ruleT=0; this.banner=0;
     this.over=false; this.started = !!S.seen.slash; this.result=null;
     this.lastP=null;
+    if(this.started) say(this.rule.say);
   },
   spawn(){
     const lvl=this.level;
@@ -748,15 +827,19 @@ scenes.slash = {
         ctx.beginPath(); ctx.moveTo(cx-90,cy+90); ctx.lineTo(x1,y1); ctx.stroke();
         ctx.fillStyle=COL.cyan; ctx.beginPath(); ctx.arc(x1,y1,10,0,TAU); ctx.fill();
         txt("WATCH OUT FOR GRAY SLUDGE!", cx, cy+150, Math.min(18,W*0.045), COL.sludge);
-      }, ()=>{ this.started=true; });
+      }, ()=>{ this.started=true; say(this.rule.say); });
       return;
     }
     if(!this.over){
       this.timeLeft-=dt;
       if(this.timeLeft<=0) this.finish();
       this.ruleT+=dt;
-      if(this.level>=2 && this.ruleT>14){
-        this.ruleT=0; this.rule=makeRule(this.level); this.banner=1.4; sfx.pop();
+      const ruleTime = this.rule.kind==="all" ? 25 : 14;
+      if(this.ruleT>ruleTime){
+        this.ruleT=0;
+        this.rule=makeRule(Math.max(2,this.level), this.rule.label);
+        this.banner=1.6; sfx.pop();
+        say("New rule! "+this.rule.say);
       }
       if(this.banner>0) this.banner-=dt;
       this.spawnT-=dt*(this.banner>0?0.3:1);
@@ -1118,32 +1201,58 @@ scenes.truck = {
     this.groundY=()=>H*0.78;
     this.y=0; this.vy=0; this.grounded=true; this.jumps=0; this.holding=false;
     this.items=[]; this.spawnX=W+100;
-    this.dist=0; this.crates=0; this.coins=0; this.invuln=0; this.airT=0;
+    this.dist=0; this.crates=0; this.coins=0; this.invuln=0;
+    this.crateB=0; this.goldB=0; this.streak=0; this.streakT=0; this.turbo=0;
     this.started=!!S.seen.truck; this.over=false; this.result=null;
     this.wheelRot=0;
   },
   scale(){ return Math.min(W,H)/480; },
+  effSpeed(){ return this.speed * (this.turbo>0? 1.55 : 1); },
   finish(msg){
     if(this.over) return;
     this.over=true;
-    const b=awardBolts(this.crates*2 + this.coins + Math.floor(this.dist/400));
+    const b=awardBolts(this.crateB + this.coins + this.goldB + Math.floor(this.dist/400));
     levelUp("truck");
     this.result={b, msg:msg||"GREAT DRIVING!"};
     sfx.win();
   },
+  smashReward(it, base){
+    this.crates++;
+    this.streak++; this.streakT=2.5;
+    const bonus = Math.min(3, Math.floor(this.streak/3));
+    this.crateB += base + bonus;
+    sfx.smash(); addShake(6);
+    burst(it.x+it.w/2, it.y+it.h/2, COL.yellow, 14, 300, 0.6);
+    floatText(this.streak>=2? "SMASH x"+this.streak+"!" : "SMASH!",
+              it.x+it.w/2, it.y-10, this.streak>=5? COL.orange : COL.yellow,
+              Math.min(30, 20+this.streak*2));
+  },
   spawnPattern(){
     const s=this.scale();
     const gY=this.groundY();
-    const kind=pick(["crates","crates","rock","coins","ramp","rock"]);
+    const pool=["crates","crates","rock","coins","ramp","rock"];
+    if(this.level>=2){ pool.push("drone","drone"); }
+    if(this.level>=3){ pool.push("turbo","gold"); }
+    const kind=pick(pool);
     let x=this.spawnX;
     if(kind==="crates"){
       const n=ri(1,3);
       for(let i=0;i<n;i++)
         this.items.push({k:"crate", x:x+i*46*s, y:gY-40*s, w:40*s, h:40*s, dead:false});
       x+=n*46*s;
+    }else if(kind==="gold"){
+      this.items.push({k:"gold", x, y:gY-44*s, w:44*s, h:44*s, dead:false});
+      x+=44*s;
     }else if(kind==="rock"){
       this.items.push({k:"rock", x, y:gY-46*s, w:52*s, h:46*s, dead:false});
       x+=52*s;
+    }else if(kind==="drone"){
+      // a no-fly zone: STAY LOW — jumping into it costs a shield
+      this.items.push({k:"drone", x, y:gY-205*s, w:150*s, h:100*s, dead:false, prop:0});
+      x+=150*s;
+    }else if(kind==="turbo"){
+      this.items.push({k:"turbo", x, y:gY-14*s, w:78*s, h:14*s, dead:false});
+      x+=78*s;
     }else if(kind==="coins"){
       const n=ri(3,5);
       for(let i=0;i<n;i++){
@@ -1155,7 +1264,7 @@ scenes.truck = {
       this.items.push({k:"ramp", x, y:gY, w:110*s, h:64*s, dead:false, used:false});
       x+=110*s;
     }
-    this.spawnX = x + rand(220,420)*s + Math.max(0, 60-this.level*4)*s;
+    this.spawnX = x + rand(240,440)*s + Math.max(0, 60-this.level*4)*s;
   },
   onDown(){
     if(!this.started||this.over) return;
@@ -1197,31 +1306,35 @@ scenes.truck = {
 
     if(!this.started){
       hintOverlay("truck", this.t, (t)=>{
-        txt("TAP TO JUMP!", W/2, H*0.18, Math.min(34,W*0.08), COL.text);
-        txt("TAP AGAIN = DOUBLE JUMP", W/2, H*0.26, Math.min(20,W*0.05), COL.cyan);
+        txt("TAP TO JUMP!", W/2, H*0.16, Math.min(34,W*0.08), COL.text);
+        txt("TAP AGAIN = DOUBLE JUMP", W/2, H*0.24, Math.min(20,W*0.05), COL.cyan);
         const ph=(t%1.4)/1.4;
         const jy = -Math.abs(Math.sin(ph*Math.PI))*90;
-        this.drawTruck(W*0.5, H*0.5+jy, s*1.1, ph*10);
-        txt("SMASH CRATES!  JUMP ROCKS!", W/2, H*0.66, Math.min(20,W*0.05), COL.lime);
-      }, ()=>{ this.started=true; });
+        this.drawTruck(W*0.5, H*0.48+jy, s*1.1, ph*10);
+        txt("SMASH CRATES!  JUMP ROCKS!", W/2, H*0.62, Math.min(20,W*0.05), COL.lime);
+        txt("DRONE AHEAD? STAY LOW!", W/2, H*0.69, Math.min(20,W*0.05), COL.red);
+      }, ()=>{ this.started=true; say("Smash crates! Jump rocks! And stay low under drones!"); });
       missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
       return;
     }
     if(!this.over){
       this.timeLeft-=dt;
       if(this.timeLeft<=0) this.finish();
+      if(this.turbo>0) this.turbo-=dt;
+      if(this.streakT>0){ this.streakT-=dt; if(this.streakT<=0) this.streak=0; }
       const g = (this.holding && this.vy<0)? 3200*0.55 : 3200;
       this.vy += g*s*dt*2.2;
       this.y += this.vy*dt;
       if(this.y>0){ this.y=0; if(!this.grounded){ sfx.land(); burst(W*0.25, gY, "#4a5f85", 6, 160, 0.4);} this.grounded=true; this.jumps=0; }
-      this.dist += this.speed*dt;
-      this.wheelRot += this.speed*dt/(26*s);
+      const sp=this.effSpeed();
+      this.dist += sp*dt;
+      this.wheelRot += sp*dt/(26*s);
       if(this.invuln>0) this.invuln-=dt;
       // move spawn cursor with world
-      this.spawnX -= this.speed*dt;
+      this.spawnX -= sp*dt;
       while(this.spawnX < W+300) this.spawnPattern();
-      for(const it of this.items) it.x -= this.speed*dt;
-      this.items=this.items.filter(it=>!it.dead && it.x>-200);
+      for(const it of this.items) it.x -= sp*dt;
+      this.items=this.items.filter(it=>!it.dead && it.x>-260);
       // collisions
       const tx=W*0.25, ty=gY+this.y;
       const tw=96*s, th=56*s;
@@ -1239,19 +1352,42 @@ scenes.truck = {
         const ov = box.x<it.x+it.w && box.x+box.w>it.x && box.y<it.y+it.h && box.y+box.h>it.y;
         if(!ov) continue;
         if(it.k==="crate"){
-          it.dead=true; this.crates++;
-          sfx.smash(); addShake(6);
-          burst(it.x+it.w/2, it.y+it.h/2, COL.yellow, 14, 300, 0.6);
-          floatText("SMASH!", it.x+it.w/2, it.y-10, COL.yellow, 22);
+          it.dead=true;
+          this.smashReward(it, 2);
+        }else if(it.k==="gold"){
+          it.dead=true;
+          this.goldB+=5; this.streak++; this.streakT=2.5;
+          sfx.smash(); sfx.coin(); addShake(7);
+          burst(it.x+it.w/2, it.y+it.h/2, COL.yellow, 22, 360, 0.8);
+          floatText("GOLD! +5", it.x+it.w/2, it.y-12, COL.yellow, 28);
         }else if(it.k==="rock"){
-          if(this.invuln<=0){
+          if(this.turbo>0){
+            it.dead=true; this.smashReward(it, 2);
+          }else if(this.invuln<=0){
             it.dead=true;
-            this.shields--; this.invuln=1.2;
+            this.shields--; this.invuln=1.2; this.streak=0;
             sfx.wrong(); addShake(12);
             burst(it.x+it.w/2, it.y+it.h/2, "#8aa3c4", 16, 320, 0.7);
             floatText("BONK!", it.x+it.w/2, it.y-14, COL.red, 26);
             if(this.shields<=0) this.finish("TRUCK NEEDS REPAIRS!");
           }
+        }else if(it.k==="drone"){
+          if(this.turbo>0){
+            it.dead=true; this.smashReward(it, 3);
+          }else if(this.invuln<=0){
+            it.dead=true;
+            this.shields--; this.invuln=1.2; this.streak=0;
+            sfx.wrong(); addShake(12);
+            burst(it.x+it.w/2, it.y+it.h/2, COL.red, 18, 340, 0.7);
+            floatText("STAY LOW!", it.x+it.w/2, it.y+it.h+16, COL.red, 26);
+            if(this.shields<=0) this.finish("TRUCK NEEDS REPAIRS!");
+          }
+        }else if(it.k==="turbo" && !it.dead && this.grounded){
+          it.dead=true;
+          this.turbo=2.4;
+          sfx.fanfare(); addShake(5);
+          floatText("TURBO!!!", tx, ty-th-70*s, COL.cyan, 34);
+          say("Turbo!");
         }else if(it.k==="ramp" && !it.used && this.grounded){
           it.used=true;
           this.vy=-Math.min(W,H)*3.9; this.grounded=false; this.jumps=2;
@@ -1262,11 +1398,17 @@ scenes.truck = {
     // items
     const sNow=this.scale();
     for(const it of this.items){
-      if(it.k==="crate"){
-        ctx.fillStyle="#b9822f"; rrect(it.x,it.y,it.w,it.h,4); ctx.fill();
-        ctx.strokeStyle="#7a5518"; ctx.lineWidth=3; ctx.stroke();
+      if(it.k==="crate" || it.k==="gold"){
+        ctx.fillStyle= it.k==="gold" ? "#e8b425" : "#b9822f";
+        rrect(it.x,it.y,it.w,it.h,4); ctx.fill();
+        ctx.strokeStyle= it.k==="gold" ? "#a87708" : "#7a5518"; ctx.lineWidth=3; ctx.stroke();
         ctx.beginPath(); ctx.moveTo(it.x,it.y); ctx.lineTo(it.x+it.w,it.y+it.h);
         ctx.moveTo(it.x+it.w,it.y); ctx.lineTo(it.x,it.y+it.h); ctx.stroke();
+        if(it.k==="gold"){
+          const gl=0.5+0.5*Math.sin(this.t*6);
+          ctx.globalAlpha=gl*0.5; ctx.fillStyle="#fff3c4";
+          rrect(it.x+4,it.y+4,it.w-8,it.h-8,4); ctx.fill(); ctx.globalAlpha=1;
+        }
       }else if(it.k==="rock"){
         ctx.fillStyle="#54637d";
         ctx.beginPath();
@@ -1274,8 +1416,43 @@ scenes.truck = {
         ctx.lineTo(it.x+it.w*0.5,it.y); ctx.lineTo(it.x+it.w*0.85,it.y+it.h*0.35);
         ctx.lineTo(it.x+it.w,it.y+it.h); ctx.closePath(); ctx.fill();
         ctx.strokeStyle="#33405a"; ctx.lineWidth=3; ctx.stroke();
+      }else if(it.k==="drone"){
+        it.prop=(it.prop||0)+dt*20;
+        const cx=it.x+it.w/2, cy=it.y+it.h*0.35;
+        // danger zone glow
+        ctx.globalAlpha=0.10+0.05*Math.sin(this.t*5);
+        ctx.fillStyle=COL.red; rrect(it.x,it.y,it.w,it.h,12); ctx.fill();
+        ctx.globalAlpha=1;
+        // body
+        ctx.fillStyle="#33405a"; rrect(cx-34*sNow, cy-12*sNow, 68*sNow, 24*sNow, 8*sNow); ctx.fill();
+        ctx.strokeStyle=COL.red; ctx.lineWidth=3; ctx.stroke();
+        // warning stripes
+        ctx.fillStyle=COL.red;
+        rrect(cx-24*sNow, cy-6*sNow, 12*sNow, 12*sNow, 2); ctx.fill();
+        rrect(cx+12*sNow, cy-6*sNow, 12*sNow, 12*sNow, 2); ctx.fill();
+        // eye
+        ctx.fillStyle=COL.red; ctx.beginPath(); ctx.arc(cx, cy, 5*sNow,0,TAU); ctx.fill();
+        // propellers
+        for(const px of [cx-30*sNow, cx+30*sNow]){
+          const spread=Math.abs(Math.sin(it.prop))*16*sNow+4;
+          ctx.strokeStyle="#8aa3c4"; ctx.lineWidth=3;
+          ctx.beginPath(); ctx.moveTo(px-spread, cy-16*sNow); ctx.lineTo(px+spread, cy-16*sNow); ctx.stroke();
+        }
+        if(this.level<=3) txt("STAY LOW!", cx, it.y-12, 15, COL.red);
       }else if(it.k==="coin"){
         drawBoltIcon(it.x,it.y,it.r);
+      }else if(it.k==="turbo"){
+        const gl=0.5+0.5*Math.sin(this.t*8);
+        ctx.fillStyle="#1b6f9e"; rrect(it.x,it.y,it.w,it.h,6); ctx.fill();
+        ctx.globalAlpha=gl; ctx.fillStyle=COL.cyan;
+        rrect(it.x+3,it.y+3,it.w-6,it.h-6,4); ctx.fill(); ctx.globalAlpha=1;
+        // chevrons
+        ctx.strokeStyle="#0b1424"; ctx.lineWidth=3;
+        for(let i=0;i<3;i++){
+          const px=it.x+12+i*(it.w-24)/2.5;
+          ctx.beginPath(); ctx.moveTo(px, it.y+3); ctx.lineTo(px+8, it.y+it.h/2);
+          ctx.lineTo(px, it.y+it.h-3); ctx.stroke();
+        }
       }else if(it.k==="ramp"){
         ctx.fillStyle="#2c9bd6";
         ctx.beginPath(); ctx.moveTo(it.x,it.y); ctx.lineTo(it.x+it.w,it.y);
@@ -1283,15 +1460,31 @@ scenes.truck = {
         ctx.strokeStyle="#1b6f9e"; ctx.lineWidth=3; ctx.stroke();
       }
     }
+    // turbo trail
+    if(this.turbo>0){
+      for(let i=0;i<3;i++){
+        const trx=W*0.25-60*sNow-i*26*sNow, trY=this.groundY()+this.y-40*sNow+rand(-16,16)*sNow;
+        ctx.globalAlpha=clamp(this.turbo/2.4,0,1)*(0.6-i*0.15);
+        ctx.fillStyle=[COL.cyan,COL.yellow,COL.orange][i%3];
+        ctx.beginPath(); ctx.arc(trx,trY,(16-i*4)*sNow,0,TAU); ctx.fill();
+      }
+      ctx.globalAlpha=1;
+    }
     // truck
     const flick = this.invuln>0 && Math.floor(this.t*14)%2===0;
-    if(!flick) this.drawTruck(W*0.25, this.groundY()+this.y, sNow, this.wheelRot);
+    if(!flick){
+      if(this.turbo>0){ ctx.save(); ctx.shadowColor=COL.cyan; ctx.shadowBlur=26; }
+      this.drawTruck(W*0.25, this.groundY()+this.y, sNow, this.wheelRot);
+      if(this.turbo>0) ctx.restore();
+    }
     updateFx(dt); drawFx();
     // HUD
-    txt("SMASHED: "+this.crates, W*0.25, 74, 17, COL.yellow);
+    txt("SMASHED: "+this.crates + (this.streak>=2? "  x"+this.streak : ""), W*0.25, 74, 17,
+        this.streak>=5? COL.orange : COL.yellow);
+    if(this.turbo>0) txt("TURBO!", W*0.25, 96, 17, COL.cyan);
     missionTop("TRUCK RUN", COL.lime, this.timeLeft, this.shields);
     if(this.over && this.result){
-      drawResult("RUN DONE!", [this.result.msg, "CRATES: "+this.crates+"   BOLTS GRABBED: "+this.coins], this.result.b, "truck");
+      drawResult("RUN DONE!", [this.result.msg, "SMASHED: "+this.crates+"   BOLTS GRABBED: "+this.coins], this.result.b, "truck");
     }
   },
   drawTruck(x, groundY, s, wheelRot){
@@ -1332,7 +1525,8 @@ scenes.truck = {
    VICTORY — Titan rebuilt
 =======================================================================*/
 scenes.victory = {
-  enter(){ this.t=0; if(!S.rebuilt){ S.rebuilt=true; save(); } sfx.fanfare(); this.fw=0; },
+  enter(){ this.t=0; if(!S.rebuilt){ S.rebuilt=true; save(); } sfx.fanfare(); this.fw=0;
+    say("Titan rebuilt! Thank you, hero! Now charge my energy to power me up!"); },
   draw(dt){
     this.t+=dt;
     drawBg(dt);
@@ -1368,18 +1562,36 @@ scenes.paint = {
     missionTop("PAINT SHOP", COL.purple, null, null);
     const s=Math.min(W*0.5,H*0.45)/300;
     drawTitan(W/2, H*0.62, s, PARTS.length, this.t, false);
+    txt("POWER UP TO UNLOCK MORE COLORS!", W/2, H*0.66, Math.min(15,W*0.04), COL.dim);
     const n=PAINTS.length;
-    const bw=Math.min(150,(W-40)/n-10), bh=64;
+    const unlocked = 1 + S.powerLv; // STORM free; each rank unlocks the next
+    const bw=Math.min(150,(W-40)/n-10), bh=72;
     const total=n*bw+(n-1)*12;
     for(let i=0;i<n;i++){
       const p=PAINTS[i];
+      const open = i<unlocked;
       const x=W/2-total/2+i*(bw+12), y=H*0.72;
-      button(x,y,bw,bh,null,()=>{ S.paint=i; save(); sfx.install();
-        burst(W/2,H*0.4,p.glow,24,360); },
-        {color: S.paint===i? "#22344f": COL.panel, stroke: S.paint===i? p.main: COL.line, r:16});
-      ctx.fillStyle=p.main; ctx.beginPath(); ctx.arc(x+bw/2, y+24, 14,0,TAU); ctx.fill();
-      txt(p.name, x+bw/2, y+bh-16, 14, COL.text);
+      button(x,y,bw,bh,null,()=>{
+        if(!open){ sfx.wrong(); floatText("REACH RANK "+i+"!", W/2, H*0.55, COL.red, 24); return; }
+        S.paint=i; save(); sfx.install();
+        say(p.name.toLowerCase()+" paint!");
+        burst(W/2,H*0.4,p.glow,24,360);
+      },
+        {color: S.paint===i? "#22344f": COL.panel,
+         stroke: S.paint===i? p.main : (open? COL.line : "#22304a"), r:16});
+      ctx.fillStyle= open? p.main : "#3a4a5b";
+      ctx.beginPath(); ctx.arc(x+bw/2, y+22, 14,0,TAU); ctx.fill();
+      if(!open){
+        // little lock
+        ctx.strokeStyle="#8aa3c4"; ctx.lineWidth=3;
+        ctx.strokeRect(x+bw/2-7, y+18, 14, 11);
+        ctx.beginPath(); ctx.arc(x+bw/2, y+18, 5, Math.PI, 0); ctx.stroke();
+        txt("RANK "+i, x+bw/2, y+bh-14, 12, COL.dim);
+      }else{
+        txt(p.name, x+bw/2, y+bh-14, 14, COL.text);
+      }
     }
+    updateFx(dt); drawFx();
   }
 };
 
@@ -1394,8 +1606,10 @@ scenes.parent = {
     const pw=Math.min(380,W*0.9), px=W/2-pw/2;
     let y=H*0.2;
     txt("Missions earn bolts. Bolts rebuild Titan.", W/2, y, 17, COL.text); y+=26;
-    txt("Rounds last "+CONFIG.roundSeconds+"s. No internet needed.", W/2, y, 15, COL.dim); y+=44;
-    button(px, y, pw, 56, S.snd? "SOUND: ON":"SOUND: OFF", ()=>{S.snd=!S.snd; save();}); y+=70;
+    txt("Rounds last "+CONFIG.roundSeconds+"s. No internet needed.", W/2, y, 15, COL.dim); y+=40;
+    button(px, y, pw, 54, S.snd? "SOUND EFFECTS: ON":"SOUND EFFECTS: OFF", ()=>{S.snd=!S.snd; save();}); y+=64;
+    button(px, y, pw, 54, S.voice? "TITAN VOICE: ON":"TITAN VOICE: OFF", ()=>{S.voice=!S.voice; save();
+      if(S.voice) say("Titan voice is on!"); }); y+=64;
     button(px, y, pw, 56,
       this.confirm? "TAP AGAIN TO ERASE ALL PROGRESS":"RESET PROGRESS",
       ()=>{
@@ -1413,6 +1627,15 @@ canvas.addEventListener("pointerdown", e=>{
   e.preventDefault();
   try{ canvas.setPointerCapture(e.pointerId); }catch(err){}
   unlockAudio();
+  if(!speechReady){
+    speechReady=true;
+    try{
+      if(window.speechSynthesis && window.SpeechSynthesisUtterance){
+        const u=new SpeechSynthesisUtterance(" "); u.volume=0;
+        speechSynthesis.speak(u);
+      }
+    }catch(err){}
+  }
   const p=evPoint(e);
   if(hitButtons(p)) return;
   if(scene && scene.onDown) scene.onDown(p);
@@ -1455,7 +1678,7 @@ function frame(now){
 }
 
 /* expose a tiny debug handle (harmless in production) */
-window.__tg = {go, scenes, get state(){return S;}};
+window.__tg = {go, scenes, get state(){return S;}, get shake(){return shake;}};
 
 go(S.intro? "home" : "intro");
 requestAnimationFrame(frame);
