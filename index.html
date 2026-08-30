@@ -86,20 +86,50 @@ const MISSIONS = [
      rrect(x-16*s,y-4*s,32*s,8*s,3); ctx.fill();
      ctx.fillStyle="#222c3d";
      ctx.beginPath(); ctx.arc(x-9*s,y+8*s,7*s,0,TAU); ctx.fill();
-     ctx.beginPath(); ctx.arc(x+9*s,y+8*s,7*s,0,TAU); ctx.fill(); }}
+     ctx.beginPath(); ctx.arc(x+9*s,y+8*s,7*s,0,TAU); ctx.fill(); }},
+  {key:"sonar", name:"SALVAGE DIVE", sub:"REMEMBER!", color:COL.cyan,
+   icon:(x,y,s)=>{
+     // a little fish over sonar arcs
+     ctx.fillStyle=COL.cyan;
+     ctx.beginPath(); ctx.ellipse(x-2*s,y-2*s,13*s,8*s,0,0,TAU); ctx.fill();
+     ctx.beginPath(); ctx.moveTo(x+9*s,y-2*s); ctx.lineTo(x+19*s,y-9*s);
+     ctx.lineTo(x+19*s,y+5*s); ctx.closePath(); ctx.fill();
+     ctx.strokeStyle="rgba(53,224,255,0.5)"; ctx.lineWidth=2.5;
+     for(let i=1;i<=2;i++){
+       ctx.beginPath(); ctx.arc(x-14*s, y+10*s, 9*s*i, -Math.PI*0.55, Math.PI*0.1); ctx.stroke();
+     } }},
+  {key:"circuit", name:"REACTOR LAB", sub:"COUNT!", color:COL.purple,
+   icon:(x,y,s)=>{
+     ctx.fillStyle=COL.purple;
+     for(let i=0;i<3;i++){
+       ctx.beginPath(); ctx.arc(x-12*s+i*12*s, y-9*s, 4.5*s, 0, TAU); ctx.fill();
+     }
+     for(let i=0;i<2;i++){
+       ctx.beginPath(); ctx.arc(x-6*s+i*12*s, y+1*s, 4.5*s, 0, TAU); ctx.fill();
+     }
+     ctx.fillStyle="#22344f"; rrect(x-13*s, y+9*s, 26*s, 12*s, 4); ctx.fill();
+     ctx.strokeStyle=COL.purple; ctx.lineWidth=2.5; ctx.stroke(); }}
 ];
 
 /* ---------------- save / load ---------------- */
 const SAVE_KEY = "titan-garage-v1";
 function defaultSave(){
-  return {v:1, bolts:0, parts:0, lv:{slash:1,build:1,truck:1},
+  return {v:1, bolts:0, parts:0, lv:{slash:1,build:1,truck:1,sonar:1,circuit:1},
           snd:true, paint:0, rebuilt:false, power:0, powerLv:0,
           seen:{}, intro:false};
 }
 let S = defaultSave();
 try{
   const raw = localStorage.getItem(SAVE_KEY);
-  if(raw){ const d = JSON.parse(raw); if(d && d.v===1) S = Object.assign(defaultSave(), d); }
+  if(raw){
+    const d = JSON.parse(raw);
+    if(d && d.v===1){
+      const base = defaultSave();
+      S = Object.assign(base, d);
+      // merge nested levels so saves from older versions gain new missions
+      S.lv = Object.assign(defaultSave().lv, d.lv||{});
+    }
+  }
 }catch(e){}
 function save(){ try{ localStorage.setItem(SAVE_KEY, JSON.stringify(S)); }catch(e){} }
 
@@ -442,15 +472,23 @@ scenes.home = {
     button(W-52,10,44,38,"⚙", ()=>go("parent"), {size:20});
 
     // ----- layout regions
-    let titanCX, titanFootY, titanS, missionArea;
+    // Mission tiles lay out as a grid so the registry can grow without
+    // squeezing them off the screen.
+    const nMis = MISSIONS.length;
+    let titanCX, titanFootY, titanS, missionArea, gridCols;
     if(land){
-      titanCX = W*0.30; titanFootY = H*0.88;
-      titanS = Math.min(W*0.30, H*0.72)/300;
-      missionArea = {x:W*0.56, y:barH+14, w:W*0.42, h:H-barH-28, col:true};
+      gridCols = nMis<=3 ? 1 : 2;
+      // leave room BELOW the titan for the action button (this was cut off before)
+      titanCX = W*0.26; titanFootY = H*0.70;
+      titanS = Math.min(W*0.26, H*0.46)/300;
+      missionArea = {x:W*0.52, y:barH+12, w:W*0.46, h:H-barH-24};
     }else{
-      titanCX = W*0.5; titanFootY = H*0.50;
-      titanS = Math.min(W*0.62, H*0.36)/300;
-      missionArea = {x:W*0.06, y:H*0.64, w:W*0.88, h:H*0.34, col:false};
+      gridCols = nMis<=3 ? nMis : 3;
+      const rows = Math.ceil(nMis/gridCols);
+      const misH = rows>1 ? H*0.40 : H*0.34;
+      titanCX = W*0.5; titanFootY = H*(rows>1 ? 0.44 : 0.50);
+      titanS = Math.min(W*0.55, H*(rows>1?0.30:0.36))/300;
+      missionArea = {x:W*0.06, y:H-misH-8, w:W*0.88, h:misH};
     }
     this.titanPos = {cx:titanCX, footY:titanFootY, s:titanS};
 
@@ -481,10 +519,12 @@ scenes.home = {
 
     // ----- Titan speech bubble
     const line=this.bubbleLine();
-    const bubW=Math.min(W*0.86, 380), bubH=42;
+    const bubCX = land ? titanCX : W/2;
+    const bubW = land ? Math.min(W*0.46, 340) : Math.min(W*0.86, 380);
+    const bubH = 42;
     const headY=titanFootY-292*titanS;
-    const bubX=W/2-bubW/2;
-    const bubY=clamp(headY-64, barH+8, H*0.4);
+    let bubX = clamp(bubCX-bubW/2, 8, Math.max(8, (land? missionArea.x-12 : W-8) - bubW));
+    const bubY=clamp(headY-58, barH+8, H*0.42);
     ctx.fillStyle="#e9f2ff"; rrect(bubX,bubY,bubW,bubH,14); ctx.fill();
     // tail
     ctx.beginPath();
@@ -492,7 +532,8 @@ scenes.home = {
     ctx.lineTo(clamp(titanCX+10,bubX+40,bubX+bubW-20), bubY+bubH);
     ctx.lineTo(clamp(titanCX,bubX+30,bubX+bubW-30), bubY+bubH+14);
     ctx.closePath(); ctx.fill();
-    txt(line.text, W/2, bubY+bubH/2, Math.min(18, bubW/line.text.length*1.85), "#12233d");
+    txt(line.text, bubX+bubW/2, bubY+bubH/2,
+        Math.min(17, (bubW-16)/line.text.length*1.85), "#12233d");
 
     // progress label under titan
     if(S.parts<PARTS.length){
@@ -502,9 +543,9 @@ scenes.home = {
     }
 
     // ----- one action row near titan
-    const bw = Math.min(280, W*0.72);
-    const bx = land? titanCX-bw/2 : W/2-bw/2;
-    const by = land? titanFootY+30 : titanFootY+32;
+    const bw = land? Math.min(300, W*0.44) : Math.min(280, W*0.72);
+    const bx = clamp((land? titanCX : W/2)-bw/2, 8, W-bw-8);
+    const by = Math.min(titanFootY+30, H-92);
     if(S.parts<PARTS.length){
       const name = PARTS[S.parts].name;
       if(canBuy){
@@ -548,16 +589,19 @@ scenes.home = {
     const M = missionArea;
     const defs = MISSIONS;
     const nM = defs.length;
+    const gc = gridCols, gr = Math.ceil(nM/gc);
+    const gapX=10, gapY=10;
+    const bw2=(M.w-(gc-1)*gapX)/gc, bh2=(M.h-(gr-1)*gapY)/gr;
     for(let i=0;i<nM;i++){
       const d=defs[i];
-      let bx2,by2,bw2,bh2;
-      if(M.col){ bh2=(M.h-(nM-1)*14)/nM; bw2=M.w; bx2=M.x; by2=M.y+i*(bh2+14); }
-      else{ bw2=(M.w-(nM-1)*12)/nM; bh2=M.h-10; bx2=M.x+i*(bw2+12); by2=M.y; }
+      const cxi=i%gc, cyi=Math.floor(i/gc);
+      const bx2=M.x+cxi*(bw2+gapX), by2=M.y+cyi*(bh2+gapY);
       button(bx2,by2,bw2,bh2,null,()=>go(d.key),{color:COL.panel,stroke:d.color,r:20});
       const cxb=bx2+bw2/2;
-      d.icon(cxb, by2+bh2*0.34, Math.min(bw2,bh2)/70);
-      txt(d.name, cxb, by2+bh2*0.62, Math.min(22,bw2*0.13), COL.text);
-      txt(d.sub+"  LV "+S.lv[d.key], cxb, by2+bh2*0.80, Math.min(15,bw2*0.09), d.color);
+      d.icon(cxb, by2+bh2*0.32, Math.min(bw2,bh2)/62);
+      txt(d.name, cxb, by2+bh2*0.64, Math.min(19,bw2*0.15,bh2*0.22), COL.text);
+      txt(d.sub+" LV "+(S.lv[d.key]||1), cxb, by2+bh2*0.83,
+          Math.min(14,bw2*0.10,bh2*0.16), d.color);
     }
 
     // effects (this was the shake bug: home never ran the decay/draw pass)
@@ -1620,6 +1664,423 @@ scenes.truck = {
    each glowing bolt hole to fasten it. This is the causal link that was
    missing: bolts -> fastening -> the part is on.
 =======================================================================*/
+/* =====================================================================
+   SEA CREATURE ART — shared by SALVAGE DIVE
+=======================================================================*/
+function drawCreature(kind, x, y, r, color, t, lit){
+  ctx.save(); ctx.translate(x,y);
+  const glow = lit? 1 : 0;
+  if(glow){ ctx.shadowColor=color; ctx.shadowBlur=28; }
+  ctx.fillStyle = lit? color : "#2a3d59";
+  ctx.strokeStyle = lit? color : "#3c5274";
+  ctx.lineWidth = 3;
+  const bob = Math.sin(t*2 + x*0.01)*r*0.06;
+  ctx.translate(0,bob);
+  if(kind==="fish"){
+    ctx.beginPath(); ctx.ellipse(0,0,r,r*0.62,0,0,TAU); ctx.fill();
+    ctx.beginPath(); ctx.moveTo(r*0.85,0); ctx.lineTo(r*1.5,-r*0.55);
+    ctx.lineTo(r*1.5,r*0.55); ctx.closePath(); ctx.fill();
+    ctx.fillStyle= lit? "#0b1424":"#16233a";
+    ctx.beginPath(); ctx.arc(-r*0.45,-r*0.14,r*0.15,0,TAU); ctx.fill();
+  }else if(kind==="crab"){
+    ctx.beginPath(); ctx.ellipse(0,0,r,r*0.72,0,0,TAU); ctx.fill();
+    for(const sgn of [-1,1]){
+      ctx.beginPath(); ctx.ellipse(sgn*r*1.25,-r*0.35,r*0.42,r*0.30,sgn*0.5,0,TAU); ctx.fill();
+      ctx.lineWidth=4; ctx.strokeStyle=ctx.fillStyle;
+      for(let i=0;i<3;i++){
+        ctx.beginPath(); ctx.moveTo(sgn*r*0.7, r*0.2+i*r*0.24);
+        ctx.lineTo(sgn*r*1.25, r*0.5+i*r*0.26); ctx.stroke();
+      }
+    }
+    ctx.fillStyle= lit? "#0b1424":"#16233a";
+    ctx.beginPath(); ctx.arc(-r*0.3,-r*0.25,r*0.14,0,TAU);
+    ctx.arc(r*0.3,-r*0.25,r*0.14,0,TAU); ctx.fill();
+  }else if(kind==="octo"){
+    ctx.beginPath(); ctx.arc(0,-r*0.1,r*0.85,Math.PI,0); ctx.fill();
+    ctx.fillRect(-r*0.85,-r*0.1,r*1.7,r*0.35);
+    for(let i=0;i<5;i++){
+      const tx0=-r*0.7+i*r*0.35;
+      const wig=Math.sin(t*3+i)*r*0.16;
+      ctx.beginPath(); ctx.moveTo(tx0,r*0.2);
+      ctx.quadraticCurveTo(tx0+wig, r*0.6, tx0+wig*0.5, r*0.95);
+      ctx.lineWidth=r*0.2; ctx.strokeStyle=ctx.fillStyle; ctx.lineCap="round"; ctx.stroke();
+    }
+    ctx.fillStyle= lit? "#0b1424":"#16233a";
+    ctx.beginPath(); ctx.arc(-r*0.3,-r*0.35,r*0.15,0,TAU);
+    ctx.arc(r*0.3,-r*0.35,r*0.15,0,TAU); ctx.fill();
+  }else if(kind==="turtle"){
+    ctx.beginPath(); ctx.ellipse(0,0,r,r*0.78,0,0,TAU); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(-r*1.05,-r*0.1,r*0.34,r*0.28,0,0,TAU); ctx.fill();
+    for(const p of [[-0.75,0.6],[0.75,0.6],[-0.8,-0.5],[0.8,-0.5]]){
+      ctx.beginPath(); ctx.ellipse(p[0]*r,p[1]*r,r*0.26,r*0.18,0,0,TAU); ctx.fill();
+    }
+    ctx.strokeStyle= lit? "#0b1424":"#16233a"; ctx.lineWidth=3;
+    ctx.beginPath(); ctx.arc(0,0,r*0.55,0,TAU); ctx.stroke();
+    for(let i=0;i<3;i++){ const a=i*TAU/3;
+      ctx.beginPath(); ctx.moveTo(Math.cos(a)*r*0.55,Math.sin(a)*r*0.55);
+      ctx.lineTo(Math.cos(a)*r*0.95,Math.sin(a)*r*0.78); ctx.stroke(); }
+  }else{ // jelly
+    ctx.beginPath(); ctx.arc(0,0,r*0.85,Math.PI,0); ctx.fill();
+    ctx.fillRect(-r*0.85,0,r*1.7,r*0.18);
+    for(let i=0;i<4;i++){
+      const tx0=-r*0.6+i*r*0.4;
+      const wig=Math.sin(t*3.4+i*1.3)*r*0.2;
+      ctx.beginPath(); ctx.moveTo(tx0,r*0.18);
+      ctx.quadraticCurveTo(tx0+wig, r*0.7, tx0-wig*0.4, r*1.15);
+      ctx.lineWidth=r*0.13; ctx.strokeStyle=ctx.fillStyle; ctx.lineCap="round"; ctx.stroke();
+    }
+    ctx.fillStyle= lit? "#0b1424":"#16233a";
+    ctx.beginPath(); ctx.arc(-r*0.28,-r*0.3,r*0.13,0,TAU);
+    ctx.arc(r*0.28,-r*0.3,r*0.13,0,TAU); ctx.fill();
+  }
+  ctx.restore();
+}
+
+/* =====================================================================
+   SALVAGE DIVE — sonar memory (working memory / sequencing)
+   Titan's lost parts are on the seabed. The sonar pings a pattern of
+   sea creatures; repeat it to bring up the salvage. Self-paced on
+   purpose: it's the one mission with no clock, which makes it a
+   different kind of attention practice than the timed games.
+=======================================================================*/
+const CREATURES = [
+  {kind:"fish",   color:COL.cyan,   tone:392},
+  {kind:"crab",   color:COL.red,    tone:523},
+  {kind:"octo",   color:COL.purple, tone:659},
+  {kind:"turtle", color:COL.lime,   tone:784},
+  {kind:"jelly",  color:COL.yellow, tone:988}
+];
+scenes.sonar = {
+  enter(){
+    this.t=0; this.level=S.lv.sonar;
+    this.n = clamp(3 + Math.floor((this.level-1)/3), 3, CREATURES.length);
+    this.seq=[]; this.step=0; this.playIdx=-1; this.playT=0;
+    this.mode="show"; this.shields=CONFIG.shields;
+    this.round=0; this.best=0; this.over=false; this.result=null;
+    this.started=!!S.seen.sonar;
+    this.flash=-1; this.flashT=0; this.wrongT=0;
+    this.bubbles=[];
+    for(let i=0;i<26;i++)
+      this.bubbles.push({x:rand(0,W), y:rand(0,H), r:rand(2,7), sp:rand(18,50)});
+    this.nextRound();
+  },
+  nextRound(){
+    this.round++;
+    this.seq.push(ri(0,this.n-1));
+    this.step=0; this.mode="show"; this.playIdx=-1; this.playT=0.7;
+  },
+  slots(){
+    const arr=[];
+    const land = W>H;
+    const cols = this.n;
+    const areaW = Math.min(W*0.92, 620);
+    const cw = areaW/cols;
+    const r = Math.min(cw*0.34, H*0.11);
+    const cy = land? H*0.60 : H*0.56;
+    for(let i=0;i<cols;i++)
+      arr.push({x:W/2-areaW/2+cw*(i+0.5), y:cy, r});
+    return arr;
+  },
+  ping(i, dur){
+    this.flash=i; this.flashT=dur||0.42;
+    const c=CREATURES[i];
+    tone(c.tone, 0.26, "sine", 0.16);
+    const sl=this.slots()[i];
+    burst(sl.x, sl.y, c.color, 8, 160, 0.4);
+  },
+  onDown(p){
+    if(!this.started || this.over || this.mode!=="input") return;
+    const sl=this.slots();
+    for(let i=0;i<sl.length;i++){
+      if(Math.hypot(p.x-sl[i].x, p.y-sl[i].y) < sl[i].r*1.35){
+        this.ping(i, 0.3);
+        if(this.seq[this.step]===i){
+          this.step++;
+          if(this.step>=this.seq.length){
+            this.best=Math.max(this.best,this.seq.length);
+            this.mode="good"; this.playT=0.7;
+            sfx.win();
+            floatText("SALVAGE UP! +"+this.seq.length, W/2, H*0.30, COL.lime, 28);
+          }
+        }else{
+          this.shields--; this.wrongT=0.6; sfx.wrong(); addShake(8);
+          floatText("SONAR LOST!", W/2, H*0.30, COL.red, 26);
+          if(this.shields<=0){ this.finish(); }
+          else{ this.mode="replay"; this.playT=0.9; this.step=0; }
+        }
+        return;
+      }
+    }
+  },
+  finish(){
+    if(this.over) return;
+    this.over=true;
+    const b=awardBolts(4 + this.best*3 + (this.round-1)*2);
+    levelUp("sonar");
+    this.result={b};
+    sfx.win();
+  },
+  draw(dt){
+    this.t+=dt;
+    // ---- underwater background
+    ctx.fillStyle="#071a2b"; ctx.fillRect(0,0,W,H);
+    ctx.fillStyle="rgba(53,224,255,0.05)";
+    for(let i=0;i<5;i++){
+      const y=(this.t*12+i*90)%(H+120)-60;
+      ctx.fillRect(0,y,W,26);
+    }
+    for(const b of this.bubbles){
+      b.y-=b.sp*dt; if(b.y< -10){ b.y=H+10; b.x=rand(0,W); }
+      ctx.globalAlpha=0.25; ctx.strokeStyle=COL.cyan; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(b.x,b.y,b.r,0,TAU); ctx.stroke();
+    }
+    ctx.globalAlpha=1;
+    // seabed
+    ctx.fillStyle="#0a2438";
+    ctx.beginPath(); ctx.moveTo(0,H);
+    for(let x=0;x<=W;x+=50) ctx.lineTo(x, H*0.80+Math.sin(x*0.01)*14);
+    ctx.lineTo(W,H); ctx.closePath(); ctx.fill();
+
+    if(!this.started){
+      hintOverlay("sonar", this.t, (t)=>{
+        txt("WATCH THE SONAR", W/2, H*0.16, Math.min(32,W*0.075), COL.text);
+        txt("THEN TAP THE SAME ORDER", W/2, H*0.24, Math.min(20,W*0.05), COL.cyan);
+        const ph=Math.floor((t*1.4)%3);
+        for(let i=0;i<3;i++){
+          const c=CREATURES[i];
+          drawCreature(c.kind, W/2-110+i*110, H*0.46, 38, c.color, t, ph===i);
+          txt(String(i+1), W/2-110+i*110, H*0.46+72, 22, ph===i? c.color : COL.dim);
+        }
+        txt("BRING UP TITAN'S LOST PARTS!", W/2, H*0.70, Math.min(19,W*0.048), COL.lime);
+      }, ()=>{ this.started=true; });
+      missionTop("SALVAGE DIVE", COL.cyan, null, this.shields);
+      return;
+    }
+
+    // ---- state machine
+    if(!this.over){
+      this.playT-=dt;
+      if(this.flashT>0) this.flashT-=dt; else this.flash=-1;
+      if(this.wrongT>0) this.wrongT-=dt;
+      if(this.mode==="show" || this.mode==="replay"){
+        if(this.playT<=0){
+          this.playIdx++;
+          if(this.playIdx>=this.seq.length){
+            this.mode="input"; this.step=0; this.playIdx=-1;
+          }else{
+            this.ping(this.seq[this.playIdx], 0.42);
+            this.playT = clamp(0.72 - this.level*0.02, 0.42, 0.72);
+          }
+        }
+      }else if(this.mode==="good"){
+        if(this.playT<=0){
+          if(this.seq.length >= 3 + this.level) this.finish();
+          else this.nextRound();
+        }
+      }
+    }
+
+    // ---- creatures
+    const sl=this.slots();
+    for(let i=0;i<this.n;i++){
+      const c=CREATURES[i];
+      const lit = this.flash===i;
+      // socket ring
+      ctx.strokeStyle= lit? c.color : "rgba(53,224,255,0.18)";
+      ctx.lineWidth= lit? 4:2;
+      ctx.beginPath(); ctx.arc(sl[i].x, sl[i].y, sl[i].r*1.32, 0, TAU); ctx.stroke();
+      drawCreature(c.kind, sl[i].x, sl[i].y, sl[i].r, c.color, this.t, lit);
+    }
+
+    updateFx(dt); drawFx();
+
+    // ---- HUD
+    const label = this.mode==="input" ? "YOUR TURN!" :
+                  this.mode==="good"  ? "GOT IT!" : "WATCH...";
+    txt(label, W/2, H*0.16, Math.min(30,W*0.07),
+        this.mode==="input"? COL.lime : COL.cyan);
+    // progress pips for the current sequence
+    const pipR=7, gapP=20, totalP=this.seq.length*gapP;
+    for(let i=0;i<this.seq.length;i++){
+      const px=W/2-totalP/2+gapP*(i+0.5), py=H*0.16+Math.min(38,W*0.09);
+      ctx.fillStyle = (this.mode==="input" && i<this.step)? COL.lime
+                    : (this.mode!=="input" && i<=this.playIdx)? COL.cyan
+                    : "rgba(138,163,196,0.3)";
+      ctx.beginPath(); ctx.arc(px,py,pipR,0,TAU); ctx.fill();
+    }
+    txt("DEPTH "+this.round, W/2, H*0.16+Math.min(64,W*0.15), 16, COL.dim);
+    missionTop("SALVAGE DIVE", COL.cyan, null, this.shields);
+    if(this.over && this.result){
+      drawResult("SALVAGE DONE!", ["LONGEST SONAR: "+this.best,
+        "DEPTH REACHED: "+this.round], this.result.b, "sonar");
+    }
+  }
+};
+
+/* =====================================================================
+   REACTOR LAB — simple math (counting, then addition within 10)
+   Titan's reactor needs a fuse with the right value. Quantities are
+   always shown as countable dots AND a numeral, so a child who can't
+   yet read numerals can still count their way to the answer.
+=======================================================================*/
+function drawDots(n, cx, cy, cell, color){
+  // arrange up to 10 dots in two tidy rows (five-frame layout, easy to subitize)
+  const top=Math.min(n,5), bot=Math.max(0,n-5);
+  const r=cell*0.30;
+  for(let i=0;i<top;i++){
+    ctx.fillStyle=color;
+    ctx.beginPath(); ctx.arc(cx-(top-1)*cell/2+i*cell, cy-(bot?cell*0.42:0), r, 0, TAU); ctx.fill();
+  }
+  for(let i=0;i<bot;i++){
+    ctx.fillStyle=color;
+    ctx.beginPath(); ctx.arc(cx-(bot-1)*cell/2+i*cell, cy+cell*0.42, r, 0, TAU); ctx.fill();
+  }
+}
+scenes.circuit = {
+  enter(){
+    this.t=0; this.level=S.lv.circuit;
+    this.timeLeft=CONFIG.roundSeconds; this.shields=CONFIG.shields;
+    this.solved=0; this.streak=0; this.over=false; this.result=null;
+    this.started=!!S.seen.circuit;
+    this.feed=0; this.feedGood=false; this.charge=0;
+    this.newProblem();
+  },
+  newProblem(){
+    const lv=this.level;
+    let a,b,ans,kind;
+    if(lv<=2){ kind="count"; ans=ri(1,5); a=ans; b=0; }
+    else if(lv<=4){ kind="count"; ans=ri(3,9); a=ans; b=0; }
+    else if(lv<=7){ kind="add"; a=ri(1,3); b=ri(1,3); ans=a+b; }
+    else { kind="add"; a=ri(1,5); b=ri(1,5); ans=a+b; }
+    this.kind=kind; this.a=a; this.b=b; this.ans=ans;
+    // three options, all plausible and distinct
+    const opts=new Set([ans]);
+    let guard=0;
+    while(opts.size<3 && guard++<50){
+      const d=pick([-2,-1,1,2]);
+      const v=ans+d;
+      if(v>=1 && v<=10) opts.add(v);
+    }
+    while(opts.size<3) opts.add(ri(1,10));
+    this.opts=Array.from(opts).sort(()=>Math.random()-0.5);
+  },
+  fuseRects(){
+    const n=this.opts.length;
+    const land=W>H;
+    const fw=Math.min(land? W*0.20 : W*0.26, 150);
+    const fh=Math.min(H*0.20, 150);
+    const gap=Math.min(W*0.04, 26);
+    const total=n*fw+(n-1)*gap;
+    const y=land? H*0.62 : H*0.66;
+    return this.opts.map((v,i)=>({v, x:W/2-total/2+i*(fw+gap), y, w:fw, h:fh}));
+  },
+  onDown(p){
+    if(!this.started || this.over || this.feed>0) return;
+    for(const f of this.fuseRects()){
+      if(p.x>=f.x && p.x<=f.x+f.w && p.y>=f.y && p.y<=f.y+f.h){
+        if(f.v===this.ans){
+          this.solved++; this.streak++;
+          this.charge=clamp(this.charge+1,0,5);
+          this.feed=0.75; this.feedGood=true;
+          sfx.coin(); sfx.place();
+          burst(f.x+f.w/2, f.y+f.h/2, COL.lime, 16, 300, 0.6);
+          floatText(this.streak>=3? "PERFECT x"+this.streak : "POWER FLOWS!",
+                    W/2, H*0.30, COL.lime, this.streak>=3?30:24);
+          if(this.charge>=5){
+            this.charge=0;
+            floatText("REACTOR SURGE! +5", W/2, H*0.24, COL.yellow, 28);
+            this.solved+=2; sfx.fanfare();
+          }
+        }else{
+          this.streak=0; this.shields--; this.feed=0.6; this.feedGood=false;
+          sfx.wrong(); addShake(7);
+          floatText("WRONG FUSE!", f.x+f.w/2, f.y-14, COL.red, 22);
+          if(this.shields<=0) this.finish();
+        }
+        return;
+      }
+    }
+  },
+  finish(){
+    if(this.over) return;
+    this.over=true;
+    const b=awardBolts(4 + this.solved*3);
+    levelUp("circuit");
+    this.result={b};
+    sfx.win();
+  },
+  draw(dt){
+    this.t+=dt;
+    drawBg(dt);
+    if(!this.started){
+      hintOverlay("circuit", this.t, (t)=>{
+        txt("COUNT THE POWER CELLS", W/2, H*0.15, Math.min(28,W*0.066), COL.text);
+        txt("PICK THE MATCHING FUSE", W/2, H*0.23, Math.min(20,W*0.05), COL.cyan);
+        drawDots(3, W/2, H*0.38, Math.min(46,W*0.11), COL.cyan);
+        const ph=Math.floor(t*1.2)%3;
+        for(let i=0;i<3;i++){
+          const x=W/2-110+i*110, val=[2,3,4][i];
+          ctx.fillStyle= (val===3 && ph===1)? "#173a1f" : COL.panel;
+          rrect(x-42,H*0.52,84,84,14); ctx.fill();
+          ctx.strokeStyle= (val===3 && ph===1)? COL.lime : COL.line;
+          ctx.lineWidth=3; ctx.stroke();
+          txt(String(val), x, H*0.52+42, 40, COL.text);
+        }
+        txt("THE FUSE POWERS TITAN!", W/2, H*0.74, Math.min(19,W*0.048), COL.lime);
+      }, ()=>{ this.started=true; });
+      missionTop("REACTOR LAB", COL.purple, this.timeLeft, this.shields);
+      return;
+    }
+    if(!this.over){
+      this.timeLeft-=dt;
+      if(this.timeLeft<=0) this.finish();
+      if(this.feed>0){
+        this.feed-=dt;
+        if(this.feed<=0 && this.feedGood) this.newProblem();
+      }
+    }
+    // ---- the reactor gap: quantities shown as dots + numerals
+    const cell=Math.min(44, W*0.10);
+    const py=H*0.30;
+    if(this.kind==="count"){
+      drawDots(this.a, W/2, py, cell, COL.cyan);
+      txt("HOW MANY?", W/2, py-Math.min(74,H*0.11), Math.min(24,W*0.058), COL.text);
+    }else{
+      const half=Math.min(W*0.24, 150);
+      drawDots(this.a, W/2-half, py, cell*0.8, COL.cyan);
+      drawDots(this.b, W/2+half, py, cell*0.8, COL.orange);
+      txt("+", W/2, py, Math.min(42,W*0.1), COL.text);
+      txt("HOW MANY ALTOGETHER?", W/2, py-Math.min(74,H*0.11), Math.min(22,W*0.052), COL.text);
+      // numerals under each group reinforce the symbol
+      txt(String(this.a), W/2-half, py+Math.min(52,H*0.08), 22, COL.cyan);
+      txt(String(this.b), W/2+half, py+Math.min(52,H*0.08), 22, COL.orange);
+    }
+    // ---- charge meter (5 correct = surge)
+    const mw=Math.min(200,W*0.5);
+    ctx.fillStyle=COL.panel; rrect(W/2-mw/2, H*0.44, mw, 16, 8); ctx.fill();
+    ctx.fillStyle=COL.yellow;
+    rrect(W/2-mw/2+2, H*0.44+2, Math.max(2,(mw-4)*(this.charge/5)), 12, 6); ctx.fill();
+    txt("REACTOR "+this.charge+" / 5", W/2, H*0.44+8, 11, COL.bg);
+    // ---- fuses
+    for(const f of this.fuseRects()){
+      const good = this.feed>0 && this.feedGood && f.v===this.ans;
+      ctx.fillStyle= good? "#173a1f" : COL.panel;
+      rrect(f.x,f.y,f.w,f.h,16); ctx.fill();
+      ctx.strokeStyle= good? COL.lime : COL.line; ctx.lineWidth=3; ctx.stroke();
+      // fuse body
+      ctx.fillStyle="#22344f"; rrect(f.x+f.w*0.2, f.y+f.h*0.12, f.w*0.6, f.h*0.24, 6); ctx.fill();
+      txt(String(f.v), f.x+f.w/2, f.y+f.h*0.58, Math.min(46,f.w*0.42), COL.text);
+      drawDots(f.v, f.x+f.w/2, f.y+f.h*0.86, Math.min(13, f.w*0.13), COL.dim);
+    }
+    updateFx(dt); drawFx();
+    txt("SOLVED: "+this.solved, W/2, H*0.20, 17, COL.lime);
+    missionTop("REACTOR LAB", COL.purple, this.timeLeft, this.shields);
+    if(this.over && this.result){
+      drawResult("REACTOR ONLINE!", ["SOLVED: "+this.solved], this.result.b, "circuit");
+    }
+  }
+};
+
 scenes.repair = {
   enter(){
     this.t=0; this.done=false; this.exitT=0;
